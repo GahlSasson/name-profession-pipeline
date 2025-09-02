@@ -1,10 +1,8 @@
 import os, csv, json, time, requests, sys
-
 API = "https://api.airtable.com/v0"
 BATCH = 10
 
 def map_row(r):
-    # Compute match_type from lexical/phonetic scores
     try:
         phon = float(r.get("phonetic_score","0") or 0)
     except Exception:
@@ -56,8 +54,7 @@ def create_records(base, table, key, rows):
     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
     url=f"{API}/{base}/{table}"
     for i in range(0, len(rows), BATCH):
-        batch = rows[i:i+BATCH]
-        payload={"records":[{"fields":map_row(r)} for r in batch],"typecast":True}
+        payload={"records":[{"fields":map_row(r)} for r in rows[i:i+BATCH]],"typecast":True}
         resp=requests.post(url, headers=headers, data=json.dumps(payload))
         if resp.status_code>=300:
             print("Create error:",resp.status_code,resp.text); raise SystemExit(1)
@@ -68,8 +65,7 @@ def update_records(base, table, key, updates):
     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
     url=f"{API}/{base}/{table}"
     for i in range(0, len(updates), BATCH):
-        batch = updates[i:i+BATCH]
-        payload={"records":[{"id":rid,"fields":fields} for rid,fields in batch],"typecast":True}
+        payload={"records":[{"id":rid,"fields":fields} for rid,fields in updates[i:i+BATCH]],"typecast":True}
         resp=requests.patch(url, headers=headers, data=json.dumps(payload))
         if resp.status_code>=300:
             print("Update error:",resp.status_code,resp.text); raise SystemExit(1)
@@ -81,17 +77,11 @@ if __name__=="__main__":
     table = os.getenv("AIRTABLE_TABLE_NAME","Candidates")
     csv_path = sys.argv[sys.argv.index("--csv")+1] if "--csv" in sys.argv else "data/candidates_raw.csv"
     assert base and key and table, "Missing Airtable secrets"
-
-    # Load CSV rows
     with open(csv_path, newline="", encoding="utf-8") as f:
         rows=list(csv.DictReader(f))
     print(f"CSV rows: {len(rows)}")
-
-    # Build existing id map
     id_map = fetch_existing_id_map(base, table, key)
-
-    to_create = []
-    to_update = []
+    to_create, to_update = [], []
     for r in rows:
         fields = map_row(r)
         person_id = fields["id"]
@@ -99,7 +89,6 @@ if __name__=="__main__":
             to_update.append((id_map[person_id], fields))
         else:
             to_create.append(r)
-
     print(f"Create: {len(to_create)} | Update: {len(to_update)}")
     create_records(base, table, key, to_create)
     update_records(base, table, key, to_update)
