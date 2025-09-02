@@ -1,11 +1,7 @@
 {
-  "Medicine": ["physician","surgeon","dentist","nurse","psychiatrist","cardiologist"],
-  "Law": ["lawyer","judge","prosecutor","barrister","solicitor","notary"],
-  "Arts": ["painter","singer","composer","poet","sculptor","actor","dancer"],
-  "STEM": ["engineer","chemist","physicist","mathematician","astronomer"],
-  "Agriculture": ["farmer","vintner","gardener","shepherd"],
-  "Finance": ["banker","accountant","broker","trader","economist"],
-  "Sports": ["footballer","cricketer","tennis player","boxer","swimmer"],
-  "Media": ["journalist","broadcaster","presenter","news anchor"],
-  "Education": ["teacher","professor","lecturer"]
+  "Trades": ["baker","butcher","smith","miller","weaver","potter","carpenter","taylor","shoemaker","cooper","brewer","mason","painter","porter","miner","archer","sailor"],
+  "Agriculture": ["farmer","shepherd","gardener","vintner","fisher"],
+  "Law": ["judge","scribe"],
+  "Arts": ["singer","painter"],
+  "Medicine": ["doctor","dentist"]
 }
