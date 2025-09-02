@@ -19,6 +19,11 @@ def load_dicts():
 
 def run_sparql(query):
     s = SPARQLWrapper("https://query.wikidata.org/sparql")
+    # A polite user-agent helps avoid 403s
+    try:
+        s.addCustomHttpHeader("User-Agent", "name-profession-pipeline/1.0 (GitHub Actions)")
+    except Exception:
+        pass
     s.setQuery(query)
     s.setReturnFormat(JSON)
     results = s.query().convert()
@@ -31,22 +36,21 @@ def phonetic_score(a: str, b: str) -> int:
     return fuzz.ratio(da, db)
 
 def build_regex_union(patterns_by_lang: dict, langs=("en","de","fr","es","it","ar","he","tr","hu","fi")) -> str:
-    # include patterns for selected languages; fall back to all keys if missing
     pats = []
     for lang in langs:
         for p in patterns_by_lang.get(lang, []):
             pats.append(f"(?:{p})")
-    for _, arr in patterns_by_lang.items():
+    # include any remaining patterns once
+    for arr in patterns_by_lang.values():
         for p in arr:
-            val = f"(?:{p})"
-            if val not in pats:
-                pats.append(val)
+            v = f"(?:{p})"
+            if v not in pats:
+                pats.append(v)
     return "|".join(pats) if pats else ".*"
 
 def discover(cluster_names, limit, outfile, langs="en,fr,de,es,it,ar,he,tr,hu,fi"):
     """
-    langs may be provided as 'en,fr,de' or 'en|fr|de'; we normalize to commas for SPARQL
-    and pass a list into the surname pattern picker.
+    langs may be 'en,fr,de' or 'en|fr|de'; we normalize to commas for SPARQL.
     """
     template = load_template()
     surname_variants, occ_by_cluster = load_dicts()
@@ -55,11 +59,14 @@ def discover(cluster_names, limit, outfile, langs="en,fr,de,es,it,ar,he,tr,hu,fi
     lang_list = [x.strip() for x in re.split(r"[|,]\s*", langs) if x.strip()]
     langs_for_sparql = ",".join(lang_list)
 
+    print(f"[INFO] clusters={cluster_names} limit={limit} langs={langs_for_sparql}")
+
     frames = []
     for cluster in cluster_names:
         for occ in occ_by_cluster.get(cluster, []):
-            key = occ.capitalize()  # dict keys like "Dentist", "Baker"
+            key = occ.capitalize()  # dict keys like "Dentist", "Baker", "Judge", "Singer"
             if key not in surname_variants:
+                # nothing to match by surname for this occupation
                 continue
             surname_regex = build_regex_union(surname_variants[key], tuple(lang_list))
             occ_regex = re.escape(occ)
@@ -71,10 +78,10 @@ def discover(cluster_names, limit, outfile, langs="en,fr,de,es,it,ar,he,tr,hu,fi
                 LIMIT=limit
             )
 
-            # helpful log
-            print(f"[DISCOVERY] cluster={cluster} occ={occ} langs={langs_for_sparql}")
-
+            print(f"[QUERY] cluster={cluster} occ={occ}")
             df = run_sparql(q)
+            print(f"[RESULT] rows={len(df)} for occ={occ}")
+
             if df.empty:
                 time.sleep(0.5)
                 continue
@@ -91,6 +98,9 @@ def discover(cluster_names, limit, outfile, langs="en,fr,de,es,it,ar,he,tr,hu,fi
     if not all_df.empty:
         Path(outfile).parent.mkdir(parents=True, exist_ok=True)
         all_df.to_csv(outfile, index=False)
+        print(f"[WRITE] {len(all_df)} → {outfile}")
+    else:
+        print("[WRITE] No candidates produced; nothing written.")
     return all_df
 
 if __name__ == "__main__":
