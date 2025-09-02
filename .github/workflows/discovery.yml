@@ -27,11 +27,14 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install pandas SPARQLWrapper rapidfuzz Metaphone requests
 
-            - name: Run discovery
+      - name: Run discovery (OPEN mode)
         run: |
           set -e
           mkdir -p data
-          echo "Running discovery (OPEN mode)…"
+          echo "Python version:"; python -V
+          echo "Repo tree:"; ls -R
+          echo "Running discovery in OPEN mode…"
+          # High-yield sweep across occupational surnames; adjust as needed:
           python scripts/wikidata_nomen_agent.py \
             --mode open \
             --clusters Trades Agriculture Law Arts Medicine \
@@ -60,4 +63,4 @@ jobs:
       # Helpful message if nothing was produced
       - name: Note if no CSV produced
         if: ${{ hashFiles('data/candidates_raw.csv') == '' }}
-        run: echo "No CSV produced; check 'Run discovery' logs and ensure dictionaries + query template are up to date."
+        run: echo "No CSV produced; check 'Run discovery (OPEN mode)' logs and ensure dictionaries + query template are up to date."
