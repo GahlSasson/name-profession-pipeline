@@ -1,14 +1,19 @@
 name: discovery
+
 on:
-  workflow_dispatch:    # allows manual runs
+  # lets you run it by hand from the Actions tab
+  workflow_dispatch:
+  # optional: weekly schedule (Mon 09:00 UTC). Delete this block if you don't want a schedule.
   schedule:
-    - cron: "0 9 * * 1" # (optional) Mondays 09:00 UTC
+    - cron: "0 9 * * 1"
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,19 +25,44 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas SPARQLWrapper rapidfuzz Metaphone requests
 
-      - name: Make data folder
-        run: mkdir -p data
-
       - name: Run discovery
         run: |
+          set -e
+          mkdir -p data
+          echo "Python version:"
+          python -V
+          echo "Repo tree:"
+          ls -R
+
+          echo "Running discovery…"
+          # Edit the clusters or limit if you want a bigger/smaller sweep
           python scripts/wikidata_nomen_agent.py \
             --clusters Medicine Law Arts \
             --limit 400 \
             --outfile data/candidates_raw.csv
-      - name: Upload to Airtable
+
+      # Always show what (if anything) was written
+      - name: Debug output (if any)
+        if: always()
+        run: |
+          echo "Data dir contents:"
+          ls -l data || true
+          echo "CSV line count:"
+          wc -l data/candidates_raw.csv || true
+          echo "First 5 lines:"
+          head -n 5 data/candidates_raw.csv || true
+
+      # Only try to upload if the CSV actually exists
+      - name: Upload to Airtable (only if CSV exists)
+        if: ${{ hashFiles('data/candidates_raw.csv') != '' }}
         env:
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
         run: |
           python scripts/push_to_airtable.py --csv data/candidates_raw.csv
+
+      # Helpful message if nothing was produced
+      - name: Note if no CSV produced
+        if: ${{ hashFiles('data/candidates_raw.csv') == '' }}
+        run: echo "No CSV produced; nothing to upload (check 'Run discovery' logs above)."
