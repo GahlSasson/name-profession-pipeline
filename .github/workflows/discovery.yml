@@ -27,19 +27,17 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install pandas SPARQLWrapper rapidfuzz Metaphone requests
 
-      - name: Run discovery
+            - name: Run discovery
         run: |
           set -e
           mkdir -p data
-          echo "Python version:"; python -V
-          echo "Repo tree:"; ls -R
-
           echo "Running discovery…"
-          # You can add more clusters: Finance STEM Sports Media Politics Education
           python scripts/wikidata_nomen_agent.py \
-            --clusters Medicine Law Arts \
+            --clusters Trades Agriculture Law Arts Medicine \
             --limit 400 \
+            --langs "en,fr,de,es,it,ar,he,tr,hu,fi,pl,nl" \
             --outfile data/candidates_raw.csv
+
 
       # Always show what (if anything) was written
       - name: Debug output (if any)
