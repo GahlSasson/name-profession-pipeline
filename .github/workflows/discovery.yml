@@ -26,8 +26,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install pandas SPARQLWrapper rapidfuzz Metaphone requests
-
-            - name: Run discovery
+      - name: Run discovery
         run: |
           set -e
           mkdir -p data
@@ -36,8 +35,7 @@ jobs:
             --clusters Trades Agriculture Law Arts Medicine \
             --limit 400 \
             --langs "en,fr,de,es,it,ar,he,tr,hu,fi,pl,nl" \
-            --outfile data/candidates_raw.csv
-
+            --outfile data/candidates_raw.csv            
 
       # Always show what (if anything) was written
       - name: Debug output (if any)
