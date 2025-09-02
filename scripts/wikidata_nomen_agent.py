@@ -9,55 +9,130 @@ TEMPLATE_PATH = Path("queries") / "query_template.sparql"
 DICT_SURNAME  = Path("dictionaries") / "surname_variants.json"
 DICT_OCC      = Path("dictionaries") / "occupations_by_cluster.json"
 
+# ----------------------------
+# Utilities
+# ----------------------------
+
 def load_template():
-    return TEMPLATE_PATH.read_text()
+    return TEMPLATE_PATH.read_text(encoding="utf-8")
 
 def load_dicts():
     surname_variants = json.loads(DICT_SURNAME.read_text(encoding="utf-8"))
     occ_by_cluster   = json.loads(DICT_OCC.read_text(encoding="utf-8"))
-    # reverse map: occ(lower) -> Cluster
+    # occ(lower) -> cluster
     occ_to_cluster = {}
     for cluster, occs in occ_by_cluster.items():
         for o in occs:
             occ_to_cluster[o.lower()] = cluster
     return surname_variants, occ_by_cluster, occ_to_cluster
 
-def run_sparql(query):
+def user_agent_sparql():
     s = SPARQLWrapper("https://query.wikidata.org/sparql")
     try:
         s.addCustomHttpHeader("User-Agent", "name-profession-pipeline/1.0 (GitHub Actions)")
     except Exception:
         pass
-    s.setQuery(query)
     s.setReturnFormat(JSON)
-    try:
-        results = s.query().convert()
-        rows = [{k: b[k]["value"] for k in b} for b in results["results"]["bindings"]]
-        return pd.DataFrame(rows)
-    except Exception as e:
-        print("[SPARQL ERROR]", e)
-        traceback.print_exc()
-        return pd.DataFrame()
+    return s
+
+def run_sparql_with_retries(query, tries=4):
+    backoff = 1.5
+    last = None
+    for t in range(tries):
+        s = user_agent_sparql()
+        s.setQuery(query)
+        try:
+            results = s.query().convert()
+            rows = [{k: b[k]["value"] for k in b} for b in results["results"]["bindings"]]
+            return pd.DataFrame(rows)
+        except Exception as e:
+            last = e
+            msg = str(e)
+            print(f"[SPARQL RETRY {t+1}/{tries}] {msg}")
+            time.sleep(backoff)
+            backoff *= 1.8
+    print("[SPARQL GAVE UP]", last)
+    return pd.DataFrame()
 
 def phonetic_score(a: str, b: str) -> int:
     da = doublemetaphone(a)[0] or ""
     db = doublemetaphone(b)[0] or ""
     return fuzz.ratio(da, db)
 
-def build_regex_union(patterns_by_lang: dict, langs=("en","de","fr","es","it","ar","he","tr","hu","fi","pl","nl")) -> str:
-    pats = []
-    for lang in langs:
-        for p in patterns_by_lang.get(lang, []):
-            pats.append(f"(?:{p})")
-    # include any remaining patterns once
-    for arr in patterns_by_lang.values():
-        for p in arr:
-            v = f"(?:{p})"
-            if v not in pats:
-                pats.append(v)
-    return "|".join(pats) if pats else ".*"
+def normalize_langs(langs: str):
+    lang_list = [x.strip() for x in re.split(r"[|,]\s*", langs) if x.strip()]
+    return lang_list, ",".join(lang_list)
 
-# Occupation synonyms to widen lexical match on labels
+# ----------------------------
+# Build safe SURNAME filter (no regex escapes)
+# ----------------------------
+
+META_CHARS = re.compile(r"[.^$*+?()\[\]\\{}|]")
+
+def extract_literal_or_prefix(pattern: str):
+    """
+    Convert our dictionary pattern into either:
+      ('equals', literal)  e.g. ^Bäcker$  -> equals('bäcker')
+      ('prefix', literal)  e.g. ^Dent($|\w+) or ^Denta($|\w+) -> prefix('dent') / prefix('denta')
+    If pattern is too weird, return None to skip.
+    """
+    p = pattern
+    # strip anchors for analysis
+    if p.startswith("^"): p = p[1:]
+    if p.endswith("$"): p = p[:-1]
+
+    # If pattern contains obvious regex meta, prefer prefix before first non-letter
+    if META_CHARS.search(pattern):
+        m = re.match(r"([A-Za-zÀ-ÖØ-öø-ÿ]+)", p)
+        if m: return ("prefix", m.group(1).lower())
+        return None
+    # No meta: pure literal
+    return ("equals", p.lower())
+
+def build_surname_filter_block(patterns_by_lang: dict, langs_list):
+    """
+    Build a SPARQL FILTER that uses only LCASE/STR/STRSTARTS and equality.
+    Returns a string like:
+      FILTER ( STRSTARTS(LCASE(STR(?surnameLabel)), "dent") || LCASE(STR(?surnameLabel)) = "bäcker" )
+    or "" if nothing to filter (caller should then skip the query).
+    """
+    equals = set()
+    prefixes = set()
+
+    # Collect from selected languages first; then include any remaining patterns once
+    seen = set()
+    for lang in langs_list:
+        for pat in patterns_by_lang.get(lang, []):
+            if (lang, pat) in seen: continue
+            seen.add((lang, pat))
+            kind_val = extract_literal_or_prefix(pat)
+            if not kind_val: continue
+            kind, val = kind_val
+            (equals if kind == "equals" else prefixes).add(val)
+
+    # Fallback: include other-language patterns if none found for selected langs
+    if not equals and not prefixes:
+        for arr in patterns_by_lang.values():
+            for pat in arr:
+                kind_val = extract_literal_or_prefix(pat)
+                if not kind_val: continue
+                kind, val = kind_val
+                (equals if kind == "equals" else prefixes).add(val)
+
+    conds = []
+    for lit in sorted(equals):
+        conds.append(f'LCASE(STR(?surnameLabel)) = "{lit}"')
+    for pre in sorted(prefixes):
+        conds.append(f'STRSTARTS(LCASE(STR(?surnameLabel)), "{pre}")')
+
+    if not conds:
+        return ""  # nothing to filter
+    return "FILTER ( " + " || ".join(conds) + " )"
+
+# ----------------------------
+# Discovery: OPEN mode (surname-only in SPARQL; client-side occupation match)
+# ----------------------------
+
 OCC_SYNONYMS = {
     "singer": ["singer", "vocalist", "opera singer", "pop singer", "cantor"],
     "painter": ["painter", "house painter", "portrait painter"],
@@ -87,104 +162,106 @@ OCC_SYNONYMS = {
     "judge": ["judge"]
 }
 
-def normalize_langs(langs: str):
-    lang_list = [x.strip() for x in re.split(r"[|,]\s*", langs) if x.strip()]
-    return lang_list, ",".join(lang_list)
-
-def discover_strict(cluster_names, limit, langs_list, langs_for_sparql):
-    """Original strict mode: filter by occupation in SPARQL (often yields few/zero)."""
-    template = load_template()
-    surname_variants, occ_by_cluster, occ_to_cluster = load_dicts()
-    frames = []
-    for cluster in cluster_names:
-        for occ in occ_by_cluster.get(cluster, []):
-            key_cap = occ.capitalize()
-            if key_cap not in surname_variants:
-                print(f"[SKIP] No surname patterns for strict occ={occ} (cluster={cluster})")
-                continue
-            surname_regex = build_regex_union(surname_variants[key_cap], tuple(langs_list))
-            occ_regex = re.escape(occ)
-            q = template.format(
-                OCCUPATION_REGEX=occ_regex,
-                SURNAME_REGEX=surname_regex,
-                LANGS=langs_for_sparql,
-                LIMIT=limit
-            )
-            print(f"[STRICT QUERY] cluster={cluster} occ={occ}")
-            df = run_sparql(q)
-            print(f"[STRICT RESULT] rows={len(df)} for occ={occ}")
-            if df.empty:
-                time.sleep(0.5); continue
-            df["cluster"] = cluster
-            df["profession_query"] = occ
-            df["lexical_match"] = df["surnameLabel"].str.lower().str.contains(occ.lower()).astype(int)
-            df["phonetic_score"] = df["surnameLabel"].apply(lambda s: phonetic_score(str(s), key_cap))
-            df["combined_score"] = 0.7*df["lexical_match"] + 0.3*(df["phonetic_score"]/100.0)
-            frames.append(df); time.sleep(1.2)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
 def discover_open(cluster_names, limit, langs_list, langs_for_sparql):
-    """
-    Open mode: query by surname only (OCCUPATION_REGEX = '.*') and filter occupations client-side
-    using OCC_SYNONYMS. Much higher yield.
-    """
     template = load_template()
     surname_variants, occ_by_cluster, occ_to_cluster = load_dicts()
 
-    # Build the set of target occ keys we want for selected clusters
-    occ_targets = []
-    for occ_lower, cluster in occ_to_cluster.items():
-        if cluster in cluster_names:
-            occ_targets.append(occ_lower)
-    occ_targets = sorted(set(occ_targets))
+    # Build target occupations set
+    occ_targets = sorted({o for o, c in occ_to_cluster.items() if c in cluster_names})
 
     frames = []
     for occ_lower in occ_targets:
-        key_cap = occ_lower.capitalize()  # e.g., "Singer" (surname key)
+        key_cap = occ_lower.capitalize()  # e.g., "Dentist", "Singer", "Baker"
         if key_cap not in surname_variants:
             print(f"[OPEN SKIP] No surname patterns for occ={occ_lower} (cluster={occ_to_cluster.get(occ_lower,'?')})")
             continue
 
-        surname_regex = build_regex_union(surname_variants[key_cap], tuple(langs_list))
-        # Disable occupation filter in SPARQL by matching anything:
+        surname_filter = build_surname_filter_block(surname_variants[key_cap], langs_list)
+        if not surname_filter:
+            print(f"[OPEN SKIP] Built empty surname filter for occ={occ_lower}")
+            continue
+
         q = template.format(
-            OCCUPATION_REGEX=".*",
-            SURNAME_REGEX=surname_regex,
+            SURNAME_FILTER=surname_filter,
+            OCCUPATION_FILTER="",   # no occupation filter in SPARQL; filter client-side
             LANGS=langs_for_sparql,
             LIMIT=limit
         )
 
         print(f"[OPEN QUERY] occ={occ_lower} cluster={occ_to_cluster.get(occ_lower,'?')}")
-        df = run_sparql(q)
+        df = run_sparql_with_retries(q, tries=4)
         print(f"[OPEN RAW] rows={len(df)} for occ={occ_lower}")
 
         if df.empty:
-            time.sleep(0.5); continue
+            time.sleep(1.0)
+            continue
 
-        # Filter client-side by occupation label containing any synonym
-        syns = OCC_SYNONYMS.get(occ_lower, [occ_lower])
-        syns_l = [s.lower() for s in syns]
+        # Client-side occupation label filter via synonyms
+        syns = [s.lower() for s in OCC_SYNONYMS.get(occ_lower, [occ_lower])]
         def occ_hits(label: str):
             lab = (label or "").lower()
-            return any(s in lab for s in syns_l)
+            return any(s in lab for s in syns)
 
         df = df[df["occupationLabel"].apply(occ_hits)]
-        print(f"[OPEN FILTERED] rows={len(df)} matched synonyms={syns_l}")
+        print(f"[OPEN FILTERED] rows={len(df)} matched synonyms={syns}")
 
         if df.empty:
-            time.sleep(0.5); continue
+            time.sleep(0.8)
+            continue
 
         cluster = occ_to_cluster.get(occ_lower, "Other")
         df["cluster"] = cluster
         df["profession_query"] = occ_lower
-        df["lexical_match"] = 1  # we required label match
+        df["lexical_match"] = 1  # we required occupation label match
         df["phonetic_score"] = df["surnameLabel"].apply(lambda s: phonetic_score(str(s), key_cap))
         df["combined_score"] = 0.7*df["lexical_match"] + 0.3*(df["phonetic_score"]/100.0)
-
         frames.append(df)
-        time.sleep(1.2)  # be polite to Wikidata
+
+        time.sleep(1.6)  # be polite to Wikidata
 
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+# ----------------------------
+# Discovery: STRICT mode (kept for completeness)
+# ----------------------------
+
+def discover_strict(cluster_names, limit, langs_list, langs_for_sparql):
+    template = load_template()
+    surname_variants, occ_by_cluster, _ = load_dicts()
+    frames = []
+    for cluster in cluster_names:
+        for occ in occ_by_cluster.get(cluster, []):
+            key_cap = occ.capitalize()
+            if key_cap not in surname_variants:
+                print(f"[STRICT SKIP] No surname patterns for occ={occ} (cluster={cluster})")
+                continue
+            surname_filter = build_surname_filter_block(surname_variants[key_cap], langs_list)
+            if not surname_filter:
+                print(f"[STRICT SKIP] Empty surname filter for occ={occ}"); continue
+            occ_filter = f'FILTER ( REGEX(LCASE(STR(?occupationLabel)), "{re.escape(occ)}", "i") )'
+            q = template.format(
+                SURNAME_FILTER=surname_filter,
+                OCCUPATION_FILTER=occ_filter,
+                LANGS=langs_for_sparql,
+                LIMIT=limit
+            )
+            print(f"[STRICT QUERY] cluster={cluster} occ={occ}")
+            df = run_sparql_with_retries(q, tries=4)
+            print(f"[STRICT RESULT] rows={len(df)} for occ={occ}")
+            if df.empty:
+                time.sleep(1.0); continue
+            df["cluster"] = cluster
+            df["profession_query"] = occ
+            df["lexical_match"] = df["surnameLabel"].str.lower().str.contains(occ.lower()).astype(int)
+            df["phonetic_score"] = df["surnameLabel"].apply(lambda s: phonetic_score(str(s), key_cap))
+            df["combined_score"] = 0.7*df["lexical_match"] + 0.3*(df["phonetic_score"]/100.0)
+            frames.append(df)
+            time.sleep(1.6)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+# ----------------------------
+# Main
+# ----------------------------
 
 def main(clusters, limit, outfile, langs, mode):
     langs_list, langs_for_sparql = normalize_langs(langs)
@@ -206,9 +283,9 @@ if __name__ == "__main__":
     try:
         ap = argparse.ArgumentParser()
         ap.add_argument("--clusters", nargs="+", required=True)
-        ap.add_argument("--limit", type=int, default=250)
+        ap.add_argument("--limit", type=int, default=120)
         ap.add_argument("--outfile", type=str, default="data/candidates_raw.csv")
-        ap.add_argument("--langs", type=str, default="en,fr,de,es,it,ar,he,pl,nl,fi,hu,tr")
+        ap.add_argument("--langs", type=str, default="en,fr,de,es,it,pl,he,ar")
         ap.add_argument("--mode", choices=["open","strict"], default="open")
         args = ap.parse_args()
         df = main(args.clusters, args.limit, args.outfile, args.langs, args.mode)
