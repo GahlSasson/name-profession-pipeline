@@ -1,0 +1,63 @@
+name: airtable_sanity
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # These must be set in your repo: Settings → Secrets and variables → Actions
+      AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+
+    steps:
+      - name: Check secrets exist
+        run: |
+          [ -n "$AIRTABLE_API_KEY" ] || (echo "❌ Missing AIRTABLE_API_KEY" && exit 1)
+          [ -n "$AIRTABLE_BASE_ID" ] || (echo "❌ Missing AIRTABLE_BASE_ID" && exit 1)
+          [ -n "$AIRTABLE_TABLE_NAME" ] || (echo "❌ Missing AIRTABLE_TABLE_NAME" && exit 1)
+          echo "✅ Secrets present."
+          echo "ℹ️  Using base: $AIRTABLE_BASE_ID ; table: $AIRTABLE_TABLE_NAME"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: GET 1 record (read test)
+        run: |
+          python - <<'PY'
+          import os, requests
+          base=os.environ['AIRTABLE_BASE_ID']
+          key=os.environ['AIRTABLE_API_KEY']
+          table=os.environ['AIRTABLE_TABLE_NAME']
+          url=f"https://api.airtable.com/v0/{base}/{table}?maxRecords=1"
+          r=requests.get(url, headers={"Authorization":f"Bearer {key}"})
+          print("HTTP", r.status_code)
+          print(r.text[:400])
+          r.raise_for_status()
+          PY
+
+      - name: POST a test row (write test)
+        run: |
+          python - <<'PY'
+          import os, requests, json
+          base=os.environ['AIRTABLE_BASE_ID']
+          key=os.environ['AIRTABLE_API_KEY']
+          table=os.environ['AIRTABLE_TABLE_NAME']
+          url=f"https://api.airtable.com/v0/{base}/{table}"
+          headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
+          payload={"records":[{"fields":{"full_name":"_SMOKE_TEST_DELETE_ME","status":"Candidate"}}],"typecast":True}
+          r=requests.post(url, headers=headers, data=json.dumps(payload))
+          print("HTTP", r.status_code)
+          print(r.text[:400])
+          r.raise_for_status()
+          print("✅ Created the _SMOKE_TEST_DELETE_ME row. You can delete it in Airtable.")
+          PY
