@@ -27,15 +27,15 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install pandas SPARQLWrapper rapidfuzz Metaphone requests
 
-      - name: Run discovery
+            - name: Run discovery
         run: |
           set -e
           mkdir -p data
-          echo "Running discovery…"
-          # High-yield smoke test; expand clusters/limit as desired
+          echo "Running discovery (OPEN mode)…"
           python scripts/wikidata_nomen_agent.py \
-            --clusters Trades Agriculture \
-            --limit 250 \
+            --mode open \
+            --clusters Trades Agriculture Law Arts Medicine \
+            --limit 200 \
             --langs "en,fr,de,es,it,ar,he,pl,nl,fi,hu,tr" \
             --outfile data/candidates_raw.csv
 
