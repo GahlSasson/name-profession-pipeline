@@ -1,4 +1,8 @@
-# Template: replace {OCCUPATION_REGEX}, {SURNAME_REGEX}, {LANGS}, {LIMIT}
+# Template with injectable filters:
+# {SURNAME_FILTER} and {OCCUPATION_FILTER} will be pasted in as complete FILTER lines (or empty).
+# {LANGS} is a comma-separated list like: en,fr,de
+# {LIMIT} is an integer.
+
 SELECT ?person ?personLabel ?surname ?surnameLabel ?occupation ?occupationLabel ?birth ?countryLabel WHERE {{
   ?person wdt:P31 wd:Q5 .
   ?person wdt:P106 ?occupation .
@@ -6,7 +10,8 @@ SELECT ?person ?personLabel ?surname ?surnameLabel ?occupation ?occupationLabel 
   OPTIONAL {{ ?person wdt:P569 ?birth . }}
   ?person wdt:P734 ?surname .
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "{LANGS}" . }}
-  FILTER (REGEX(LCASE(STR(?occupationLabel)), "{OCCUPATION_REGEX}", "i"))
-  FILTER (REGEX(STR(?surnameLabel), "{SURNAME_REGEX}", "i"))
+
+  {SURNAME_FILTER}
+  {OCCUPATION_FILTER}
 }}
 LIMIT {LIMIT}
