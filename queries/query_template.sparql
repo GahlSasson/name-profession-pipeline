@@ -7,6 +7,6 @@ SELECT ?person ?personLabel ?surname ?surnameLabel ?occupation ?occupationLabel 
   ?person wdt:P734 ?surname .
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "{LANGS}" . }}
   FILTER (REGEX(LCASE(STR(?occupationLabel)), "{OCCUPATION_REGEX}", "i"))
-  FILTER (REGEX(STR(?surnameLabel)), "{SURNAME_REGEX}", "i")
+  FILTER (REGEX(STR(?surnameLabel), "{SURNAME_REGEX}", "i"))
 }}
 LIMIT {LIMIT}
