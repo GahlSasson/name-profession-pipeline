@@ -2,8 +2,6 @@ name: discovery
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 9 * * 1"   # Mondays 09:00 UTC (optional)
 
 jobs:
   run:
@@ -25,6 +23,11 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install pandas SPARQLWrapper rapidfuzz Metaphone requests
 
+      - name: Show SPARQL template header (sanity)
+        run: |
+          echo "Template first 20 lines:"
+          sed -n '1,20p' queries/query_template.sparql
+
       - name: Run discovery (OPEN mode, safe filters)
         run: |
           set -e
@@ -32,9 +35,9 @@ jobs:
           echo "Running discovery in OPEN mode with safe surname filters…"
           python scripts/wikidata_nomen_agent.py \
             --mode open \
-            --clusters Trades Agriculture Law Arts Medicine \
-            --limit 120 \
-            --langs "en,fr,de,es,it,pl,he,ar" \
+            --clusters Trades Agriculture \
+            --limit 80 \
+            --langs "en,de,fr,es,it" \
             --outfile data/candidates_raw.csv
 
       - name: Debug output (if any)
@@ -53,6 +56,6 @@ jobs:
         run: |
           python scripts/push_to_airtable.py --csv data/candidates_raw.csv
 
-      - name: Note if no CSV produced
+      - name: No CSV produced
         if: ${{ hashFiles('data/candidates_raw.csv') == '' }}
-        run: echo "No CSV produced; check 'Run discovery' logs for [OPEN RAW]/[OPEN FILTERED] counts and timeouts."
+        run: echo "No CSV produced; confirm template shows {SURNAME_FILTER}/{OCCUPATION_FILTER} and logs show [FILTER] ... (not REGEX...)."
