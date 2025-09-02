@@ -1,4 +1,4 @@
-import os, csv, json, time, requests, sys, urllib.parse
+import os, csv, json, time, requests, sys
 
 API = "https://api.airtable.com/v0"
 BATCH = 10
@@ -11,7 +11,6 @@ def map_row(r):
         phon = 0.0
     mt = "Exact homonym" if str(r.get("lexical_match","0")) == "1" else ("Phonetic" if phon >= 80 else "Morphological/Other")
     person_url = r.get("person","")
-
     return {
         "id": person_url,
         "full_name": r.get("personLabel",""),
@@ -53,25 +52,27 @@ def fetch_existing_id_map(base, table, key):
     return rec_map
 
 def create_records(base, table, key, rows):
+    if not rows: return
     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
     url=f"{API}/{base}/{table}"
     for i in range(0, len(rows), BATCH):
         batch = rows[i:i+BATCH]
         payload={"records":[{"fields":map_row(r)} for r in batch],"typecast":True}
         resp=requests.post(url, headers=headers, data=json.dumps(payload))
-        if resp.status_code>=300: print("Create error:",resp.status_code,resp.text); raise SystemExit(1)
+        if resp.status_code>=300:
+            print("Create error:",resp.status_code,resp.text); raise SystemExit(1)
         time.sleep(0.4)
 
 def update_records(base, table, key, updates):
     if not updates: return
     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
     url=f"{API}/{base}/{table}"
-    # Airtable PATCH supports batching too
     for i in range(0, len(updates), BATCH):
         batch = updates[i:i+BATCH]
         payload={"records":[{"id":rid,"fields":fields} for rid,fields in batch],"typecast":True}
         resp=requests.patch(url, headers=headers, data=json.dumps(payload))
-        if resp.status_code>=300: print("Update error:",resp.status_code,resp.text); raise SystemExit(1)
+        if resp.status_code>=300:
+            print("Update error:",resp.status_code,resp.text); raise SystemExit(1)
         time.sleep(0.4)
 
 if __name__=="__main__":
@@ -79,7 +80,7 @@ if __name__=="__main__":
     key   = os.getenv("AIRTABLE_API_KEY")
     table = os.getenv("AIRTABLE_TABLE_NAME","Candidates")
     csv_path = sys.argv[sys.argv.index("--csv")+1] if "--csv" in sys.argv else "data/candidates_raw.csv"
-    assert base and key, "Missing Airtable secrets"
+    assert base and key and table, "Missing Airtable secrets"
 
     # Load CSV rows
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -100,9 +101,6 @@ if __name__=="__main__":
             to_create.append(r)
 
     print(f"Create: {len(to_create)} | Update: {len(to_update)}")
-    if to_create:
-        create_records(base, table, key, to_create)
-    if to_update:
-        update_records(base, table, key, to_update)
-
+    create_records(base, table, key, to_create)
+    update_records(base, table, key, to_update)
     print("Upsert complete.")
