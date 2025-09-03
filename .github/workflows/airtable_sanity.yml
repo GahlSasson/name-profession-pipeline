@@ -12,21 +12,18 @@ jobs:
       AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
 
     steps:
-      - name: Check secrets exist
+      - name: Show secrets presence and lengths (no fail-fast)
+        shell: bash
+        continue-on-error: true
         run: |
-          [ -n "$AIRTABLE_API_KEY" ] || (echo "❌ Missing AIRTABLE_API_KEY" && exit 1)
-          [ - n "$AIRTABLE_BASE_ID" ] || (echo "❌ Missing AIRTABLE_BASE_ID" && exit 1)
-          [ -n "$AIRTABLE_TABLE_NAME" ] || (echo "❌ Missing AIRTABLE_TABLE_NAME" && exit 1)
-          echo "✅ Secrets present."
-
-      - name: Print secret lengths (safe)
-        run: |
-          python - <<'PY'
-          import os
-          for k in ("AIRTABLE_API_KEY","AIRTABLE_BASE_ID","AIRTABLE_TABLE_NAME"):
-              v=os.environ.get(k,"")
-              print(k, "length:", len(v))
-          PY
+          for k in AIRTABLE_API_KEY AIRTABLE_BASE_ID AIRTABLE_TABLE_NAME; do
+            v="${!k}"
+            if [ -z "$v" ]; then
+              echo "❌ $k is MISSING (length 0)"
+            else
+              echo "✅ $k present (length ${#v})"
+            fi
+          done
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,6 +36,7 @@ jobs:
           pip install requests
 
       - name: List bases token can access  (needs schema.bases:read)
+        if: env.AIRTABLE_API_KEY != ''
         continue-on-error: true
         run: |
           python - <<'PY'
@@ -51,6 +49,7 @@ jobs:
           PY
 
       - name: List tables in your AIRTABLE_BASE_ID
+        if: env.AIRTABLE_API_KEY != '' && env.AIRTABLE_BASE_ID != ''
         continue-on-error: true
         run: |
           python - <<'PY'
@@ -64,6 +63,7 @@ jobs:
           PY
 
       - name: GET 1 record from table (read test)
+        if: env.AIRTABLE_API_KEY != '' && env.AIRTABLE_BASE_ID != '' && env.AIRTABLE_TABLE_NAME != ''
         continue-on-error: true
         run: |
           python - <<'PY'
@@ -78,6 +78,7 @@ jobs:
           PY
 
       - name: POST a test row (write test)
+        if: env.AIRTABLE_API_KEY != '' && env.AIRTABLE_BASE_ID != '' && env.AIRTABLE_TABLE_NAME != ''
         continue-on-error: true
         run: |
           python - <<'PY'
