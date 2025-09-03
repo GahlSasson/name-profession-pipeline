@@ -1,0 +1,7 @@
+name: Manual Discovery Test
+on: { workflow_dispatch: {} }
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Manual dispatch works."
