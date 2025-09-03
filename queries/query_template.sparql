@@ -1,17 +1,17 @@
-# Template with injectable filters:
-# {SURNAME_FILTER} and {OCCUPATION_FILTER} will be pasted in as complete FILTER lines (or empty).
-# {LANGS} is a comma-separated list like: en,fr,de
+# Template: expects {SURNAME_FILTER} and {OCCUPATION_FILTER} to be injected.
+# {LANGS} is a comma-separated list like: en,de,fr
 # {LIMIT} is an integer.
 
-SELECT ?person ?personLabel ?surname ?surnameLabel ?occupation ?occupationLabel ?birth ?countryLabel WHERE {{
+SELECT ?person ?personLabel ?surname ?surnameLabel ?occupation ?occupationLabel ?birth ?countryLabel WHERE {
   ?person wdt:P31 wd:Q5 .
   ?person wdt:P106 ?occupation .
-  OPTIONAL {{ ?person wdt:P27 ?country . }}
-  OPTIONAL {{ ?person wdt:P569 ?birth . }}
+  OPTIONAL { ?person wdt:P27 ?country . }
+  OPTIONAL { ?person wdt:P569 ?birth . }
   ?person wdt:P734 ?surname .
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "{LANGS}" . }}
+
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "{LANGS}" . }
 
   {SURNAME_FILTER}
   {OCCUPATION_FILTER}
-}}
+}
 LIMIT {LIMIT}
