@@ -57,6 +57,7 @@ def normalize_langs(langs: str):
     lang_list = [x.strip() for x in re.split(r"[|,]\s*", langs) if x.strip()]
     return lang_list, ",".join(lang_list)
 
+# Treat meta-chars as signal to fall back to a prefix where possible
 META_CHARS = re.compile(r"[.^$*+?()\[\]\\{}|]")
 
 def extract_literal_or_prefix(pattern: str):
@@ -70,6 +71,7 @@ def extract_literal_or_prefix(pattern: str):
     return ("equals", p.lower())
 
 def build_surname_filter_block(patterns_by_lang: dict, langs_list):
+    """Return a SPARQL FILTER that uses STRSTARTS / equality (no regex), across given langs."""
     equals, prefixes, seen = set(), set(), set()
     for lang in langs_list:
         for pat in patterns_by_lang.get(lang, []):
@@ -80,6 +82,7 @@ def build_surname_filter_block(patterns_by_lang: dict, langs_list):
             kind, val = kv
             (equals if kind == "equals" else prefixes).add(val)
     if not equals and not prefixes:
+        # fallback: try all languages if selected ones yielded nothing
         for arr in patterns_by_lang.values():
             for pat in arr:
                 kv = extract_literal_or_prefix(pat)
@@ -91,6 +94,7 @@ def build_surname_filter_block(patterns_by_lang: dict, langs_list):
     if not conds: return ""
     return "FILTER ( " + " || ".join(conds) + " )"
 
+# Light synonym list to keep "open" mode precise post-query
 OCC_SYNONYMS = {
     "singer": ["singer", "vocalist", "opera singer", "pop singer", "cantor"],
     "painter": ["painter", "house painter", "portrait painter"],
@@ -173,7 +177,9 @@ def discover_strict(cluster_names, limit, langs_list, langs_for_sparql):
                 continue
             surname_filter = build_surname_filter_block(surname_variants[key_cap], langs_list)
             if not surname_filter:
-                print(f"[STRICT SKIP] Empty surname filter for occ={occ}"); continue
+                print(f"[STRICT SKIP] Empty surname filter for occ={occ}")
+                continue
+            # strict uses an occupation label filter (safe lowercased substring)
             occ_filter = f'FILTER ( REGEX(LCASE(STR(?occupationLabel)), "{re.escape(occ)}", "i") )'
             q = template.format(
                 SURNAME_FILTER=surname_filter,
@@ -215,7 +221,7 @@ if __name__ == "__main__":
         ap = argparse.ArgumentParser()
         ap.add_argument("--clusters", nargs="+", required=True)
         ap.add_argument("--limit", type=int, default=120)
-        ap.add_argument("--outfile", type:str, default="data/candidates_raw.csv")
+        ap.add_argument("--outfile", type=str, default="data/candidates_raw.csv")
         ap.add_argument("--langs", type=str, default="en,de,fr,es,it")
         ap.add_argument("--mode", choices=["open","strict"], default="open")
         args = ap.parse_args()
