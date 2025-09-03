@@ -6,7 +6,7 @@ on:
       clusters:
         description: "Space-separated clusters (e.g. 'Trades Arts')"
         required: true
-        default: "Trades"
+        default: "Arts"
       limit:
         description: "Max results per occupation query"
         required: true
@@ -18,7 +18,7 @@ on:
       mode:
         description: "open (surname filter only) or strict (adds occupation filter)"
         required: true
-        default: "open"
+        default: "strict"
 
 jobs:
   run:
@@ -71,7 +71,7 @@ jobs:
           echo "CSV line count:";    wc -l data/candidates_raw.csv || true
           echo "First 5 lines:";     head -n 5 data/candidates_raw.csv || true
 
-      # Optional: seed one demo row so the upload step runs and shows mapping
+      # Optional: seed a demo row so the upload step runs and shows mapping
       - name: Fallback: seed 1 demo row if no CSV (optional)
         if: ${{ hashFiles('data/candidates_raw.csv') == '' }}
         run: |
@@ -99,4 +99,4 @@ jobs:
       - name: No CSV produced
         if: ${{ hashFiles('data/candidates_raw.csv') == '' }}
         run: |
-          echo "No CSV produced by discovery (and fallback disabled); upload step was skipped."
+          echo "No CSV produced by discovery; upload step was skipped."
