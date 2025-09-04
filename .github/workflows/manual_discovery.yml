@@ -1,5 +1,4 @@
 name: Discovery (Manual — PROD)
-
 on:
   workflow_dispatch:
     inputs:
