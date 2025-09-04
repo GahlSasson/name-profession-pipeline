@@ -1,4 +1,4 @@
-name: Discovery (Manual)
+name: Discovery (Manual — PROD)
 
 on:
   workflow_dispatch:
