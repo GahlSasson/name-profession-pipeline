@@ -49,6 +49,7 @@ jobs:
 
       - name: Run discovery
         run: |
+          mkdir -p data
           python scripts/wikidata_nomen_agent.py \
             --clusters "${{ github.event.inputs.clusters }}" \
             --limit    ${{ github.event.inputs.limit }} \
