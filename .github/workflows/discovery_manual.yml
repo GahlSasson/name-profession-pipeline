@@ -47,17 +47,14 @@ jobs:
           echo "langs:    ${{ inputs.langs }}"
           echo "mode:     ${{ inputs.mode }}"
 
-      # Quick sanity: confirm your SPARQL template has placeholders
-      - name: Show SPARQL template header
+      - name: Show SPARQL template header (sanity)
         run: |
           echo "First 30 lines of queries/query_template.sparql:"
           sed -n '1,30p' queries/query_template.sparql
-          echo "----"
-          echo "Looking for required placeholders:"
-          (grep -n "{SURNAME_FILTER}" queries/query_template.sparql && echo "✓ SURNAME_FILTER found") || (echo "✗ SURNAME_FILTER MISSING"; exit 1)
-          (grep -n "{OCCUPATION_FILTER}" queries/query_template.sparql && echo "✓ OCCUPATION_FILTER found") || (echo "✗ OCCUPATION_FILTER MISSING"; exit 1)
+          echo "---- Checking placeholders:"
+          (grep -n "{SURNAME_FILTER}" queries/query_template.sparql && echo "✓ SURNAME_FILTER ok") || (echo "✗ SURNAME_FILTER MISSING"; exit 1)
+          (grep -n "{OCCUPATION_FILTER}" queries/query_template.sparql && echo "✓ OCCUPATION_FILTER ok") || (echo "✗ OCCUPATION_FILTER MISSING"; exit 1)
 
-      # Run the discovery script – writes data/candidates_raw.csv when matches are found
       - name: Run discovery
         run: |
           set -e
@@ -70,7 +67,6 @@ jobs:
             --langs "${{ inputs.langs }}" \
             --outfile data/candidates_raw.csv
 
-      # Always show what was produced
       - name: Debug output (if any)
         if: ${{ always() }}
         run: |
@@ -85,7 +81,6 @@ jobs:
           name: discovery-csv
           path: data/candidates_raw.csv
 
-      # Push to Airtable only when a CSV exists
       - name: Upload to Airtable (only if CSV exists)
         if: ${{ hashFiles('data/candidates_raw.csv') != '' }}
         env:
@@ -96,9 +91,8 @@ jobs:
           echo "Using base: $AIRTABLE_BASE_ID ; table: $AIRTABLE_TABLE_NAME"
           python scripts/push_to_airtable.py --csv data/candidates_raw.csv
 
-      - name: No CSV produced (read this hint)
+      - name: No CSV produced (read this)
         if: ${{ hashFiles('data/candidates_raw.csv') == '' }}
         run: |
-          echo "No CSV produced. Check the 'Run discovery' step logs for [FILTER] lines."
-          echo "If you see SPARQL rate limits (HTTP 429/504), re-run with a smaller limit (e.g. 30) and langs='en'."
-          echo "If you see 'QueryBadFormed', your template must contain {SURNAME_FILTER} and {OCCUPATION_FILTER} placeholders."
+          echo "No CSV produced. Re-run with smaller --limit (e.g. 30) and langs='en'."
+          echo "If 'Show SPARQL template header' failed, paste the template in step 2 below."
