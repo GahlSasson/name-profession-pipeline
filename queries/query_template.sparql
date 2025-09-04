@@ -1,6 +1,5 @@
-# Template: expects {SURNAME_FILTER} and {OCCUPATION_FILTER} to be injected.
-# {LANGS} is a comma-separated list like: en,de,fr
-# {LIMIT} is an integer.
+# Template used by wikidata_nomen_agent.py
+# Placeholders: {LANGS} {LIMIT} {OCCUPATION_FILTER} {SURNAME_FILTER}
 
 SELECT ?person ?personLabel ?surname ?surnameLabel ?occupation ?occupationLabel ?birth ?countryLabel WHERE {
   ?person wdt:P31 wd:Q5 .
@@ -11,7 +10,7 @@ SELECT ?person ?personLabel ?surname ?surnameLabel ?occupation ?occupationLabel 
 
   SERVICE wikibase:label { bd:serviceParam wikibase:language "{LANGS}" . }
 
-  {SURNAME_FILTER}
   {OCCUPATION_FILTER}
+  {SURNAME_FILTER}
 }
 LIMIT {LIMIT}
