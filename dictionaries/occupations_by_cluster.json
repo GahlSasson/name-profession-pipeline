@@ -1,7 +1,11 @@
 {
-  "Trades": ["baker","butcher","smith","miller","weaver","potter","carpenter","taylor","shoemaker","cooper","brewer","mason","painter","porter","miner","archer","sailor"],
-  "Agriculture": ["farmer","shepherd","gardener","vintner","fisher"],
-  "Law": ["judge","scribe"],
-  "Arts": ["singer","painter"],
-  "Medicine": ["doctor","dentist"]
+  "Trades": [
+    "Baker", "Smith", "Miller", "Carpenter", "Fisher",
+    "Butcher", "Tailor", "Mason", "Potter", "Shepherd",
+    "Farmer", "Gardener", "Cooper", "Carter", "Turner", "Fowler", "Sawyer"
+  ],
+  "Arts": ["Singer", "Painter", "Composer", "Dancer", "Poet", "Sculptor", "Actor"],
+  "Law": ["Judge", "Lawyer", "Solicitor", "Prosecutor", "Notary", "Barrister"],
+  "Medicine": ["Dentist", "Physician", "Surgeon", "Cardiologist", "Psychiatrist", "Nurse"],
+  "Agriculture": ["Farmer", "Shepherd", "Vintner", "Gardener"]
 }
