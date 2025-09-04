@@ -1,7 +1,72 @@
-name: Manual Discovery Test
-on: { workflow_dispatch: {} }
+name: Discovery (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      clusters:
+        description: "Comma-separated clusters (e.g., Trades,Arts,Law)"
+        required: true
+        default: "Trades"
+      limit:
+        description: "Per-occupation result limit"
+        required: false
+        default: "40"
+      langs:
+        description: "Wikidata label language order"
+        required: false
+        default: "en"
+      mode:
+        description: "open or strict"
+        required: false
+        default: "open"
+
 jobs:
-  hello:
+  sanity:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Manual dispatch works."
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install SPARQLWrapper pandas rapidfuzz Metaphone requests
+
+      - name: Preflight: show dictionaries & template
+        run: |
+          echo "== repo tree =="; ls -R | sed -n '1,200p'
+          echo "== occupations_by_cluster.json (first 120) =="; sed -n '1,120p' dictionaries/occupations_by_cluster.json || true
+          echo "== surname_variants.json (first 120) =="; sed -n '1,120p' dictionaries/surname_variants.json || true
+          echo "== query_template.sparql (head) =="; sed -n '1,40p' queries/query_template.sparql || true
+
+      - name: Show SPARQL template header (sanity)
+        run: sed -n '1,40p' queries/query_template.sparql
+
+      - name: Run discovery
+        run: |
+          python scripts/wikidata_nomen_agent.py \
+            --clusters "${{ github.event.inputs.clusters }}" \
+            --limit    ${{ github.event.inputs.limit }} \
+            --langs    "${{ github.event.inputs.langs }}" \
+            --mode     "${{ github.event.inputs.mode }}" \
+            --outfile  "data/candidates_raw.csv"
+
+      - name: Debug output (if any)
+        run: |
+          echo "Data dir contents:"; ls -l data || true
+          echo "CSV line count:"; wc -l data/candidates_raw.csv || true
+          echo "First 5 lines:"; head -n 5 data/candidates_raw.csv || true
+
+      - name: Upload to Airtable (only if CSV exists)
+        if: ${{ hashFiles('data/candidates_raw.csv') != '' }}
+        env:
+          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          python scripts/push_to_airtable.py --csv data/candidates_raw.csv
