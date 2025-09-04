@@ -6,7 +6,7 @@
   "Fisher":  ["Fisher", "Fischer", "Pescador", "Pecheur", "Pescatore", "Rybak"],
   "Butcher": ["Butcher", "Metzger", "Macellaio", "Carnicero", "Boucher"],
   "Tailor":  ["Tailor", "Schneider", "Sastre", "Sarto", "Couturier"],
-  "Mason":   ["Mason", "Maçon", "Muratore", "Albanil", "Stenarbetare"],
+  "Mason":   ["Mason", "Maçon", "Muratore", "Albañil", "Stenarbetare"],
   "Potter":  ["Potter", "Pottier", "Pottierer", "Olaru", "Hrnčíř"],
   "Shepherd":["Shepherd", "Sheppard", "Berger", "Pastore", "Pastor", "Çoban"],
   "Farmer":  ["Farmer", "Bauer", "Agricola", "Campesino"],
@@ -15,5 +15,5 @@
   "Carter":  ["Carter", "Cartero", "Charretier", "Carrettiere"],
   "Turner":  ["Turner", "Tourneur", "Drechsler", "Tornitore"],
   "Fowler":  ["Fowler", "Vogler", "Oiseleur"],
-  "Sawyer":  ["Sawyer", "Sager", "Segatore"]
+  "Sawyer":  ["Sawyer", "Säger", "Segatore"]
 }
