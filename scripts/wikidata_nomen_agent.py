@@ -1,117 +1,135 @@
-import json, csv, re, time, sys, os
+#!/usr/bin/env python3
+import argparse, csv, json, re, sys, time
 from pathlib import Path
 from SPARQLWrapper import SPARQLWrapper, JSON
 
-WD_ENDPOINT = "https://query.wikidata.org/sparql"
+ROOT = Path(__file__).resolve().parent.parent
+TEMPLATE = ROOT / "queries" / "query_template.sparql"
+DICT_DIR = ROOT / "dictionaries"
+ENDPOINT = "https://query.wikidata.org/sparql"
+UA = "Name-Profession-Pipeline/1.0 (+https://github.com/GahlSasson/name-profession-pipeline)"
 
-def load_json(p):
-    with open(p, encoding="utf-8") as f:
-        return json.load(f)
+def load_json(p: Path):
+    return json.loads(p.read_text(encoding="utf-8"))
 
-def build_surname_regex(variants):
+def safe_prefix_regex(prefixes):
     """
-    Build a SPARQL/Java-regex-safe OR pattern.
-    IMPORTANT: Do NOT use \w (causes lexical errors on Blazegraph).
-    We match start-of-surname plus any trailing letters: ^Dent.*|^Denta.*
+    Build OR-of-prefixes, each as ^<prefix>.* (no \\w; Blazegraph chokes on it).
+    Escapes regex metacharacters and double-quotes for SPARQL string.
     """
     alts = []
-    for v in variants:
-        v = v.strip()
-        if not v:
+    for pref in prefixes:
+        pref = (pref or "").strip()
+        if not pref:
             continue
-        # escape regex special chars; allow diacritics
-        v_esc = re.escape(v)
-        alts.append(f"^{v_esc}.*")
+        alts.append("^" + re.escape(pref) + ".*")
     if not alts:
         return None
-    return "(" + "|".join(alts) + ")"
+    patt = "(" + "|".join(alts) + ")"
+    return patt.replace('"', '\\"')
 
-def build_occ_filter(occ, mode):
+def occ_filter_block(occ: str, mode: str):
     if mode == "strict":
-        # case-insensitive label contains
-        return f'BIND(LCASE(STR(?occupationLabel)) AS ?occ_lc) FILTER(CONTAINS(?occ_lc, "{occ.lower()}"))'
+        patt = re.escape(occ.lower()).replace('"', '\\"')
+        return f'FILTER ( CONTAINS(LCASE(STR(?occupationLabel)), "{patt}") )'
     else:
-        return "# open mode (no occupation filter)"
+        return "# open mode: no occupation filter"
 
-def run_query(sparql, q, tries=3):
+def compile_query(tmpl: str, langs: str, limit: int, sregex: str, occ_block: str):
+    return (tmpl
+        .replace("{LANGS}", langs)
+        .replace("{LIMIT}", str(limit))
+        .replace("{SURNAME_FILTER}", f'FILTER ( REGEX(STR(?surnameLabel), "{sregex}", "i") )')
+        .replace("{OCCUPATION_FILTER}", occ_block)
+    )
+
+def run_sparql(q: str, tries=3, pause=3.0):
+    s = SPARQLWrapper(ENDPOINT)
+    s.setMethod("POST")
+    s.setReturnFormat(JSON)
+    s.addCustomHttpHeader("User-Agent", UA)
     for i in range(tries):
         try:
-            sparql.setQuery(q)
-            sparql.setReturnFormat(JSON)
-            return sparql.query().convert()
+            s.setQuery(q)
+            return s.query().convert()
         except Exception as e:
-            # Backoff on 429/504/etc.
-            wait = 2 + i * 4
-            print(f"[WARN] SPARQL error attempt {i+1}: {e}; sleeping {wait}s", file=sys.stderr)
+            wait = pause * (i + 1)
+            print(f"[WARN] SPARQL attempt {i+1} failed: {e}; retrying in {wait:.1f}s", file=sys.stderr)
             time.sleep(wait)
-    # On hard failure: return empty result shape
-    return {"results":{"bindings":[]}}
+    return {"results": {"bindings": []}}
 
 def main():
-    import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--clusters", nargs="+", default=["Trades"])
-    ap.add_argument("--limit", type=int, default=60)
+    ap.add_argument("--clusters", required=True, help="Comma- or space-separated cluster names (e.g., Trades)")
+    ap.add_argument("--limit", type=int, default=40)
     ap.add_argument("--langs", default="en")
     ap.add_argument("--mode", choices=["open","strict"], default="open")
     ap.add_argument("--outfile", default="data/candidates_raw.csv")
     args = ap.parse_args()
 
-    base = Path(".")
-    occ_by_cluster = load_json(base/"dictionaries"/"occupations_by_cluster.json")
-    surname_variants = load_json(base/"dictionaries"/"surname_variants.json")
+    occ_by_cluster = load_json(DICT_DIR / "occupations_by_cluster.json")
+    surname_variants = load_json(DICT_DIR / "surname_variants.json")
+    print(f"[INFO] available clusters: {list(occ_by_cluster.keys())}")
 
-    # Expand clusters → occupations
+    # Parse clusters string -> list
+    requested = []
+    for token in re.split(r"[,\s]+", args.clusters.strip()):
+        if token:
+            requested.append(token)
+    # Resolve to occupations
     occs = []
-    for c in args.clusters:
+    for c in requested:
         occs.extend(occ_by_cluster.get(c, []))
+    print(f"[INFO] requested clusters: {requested}")
+    print(f"[INFO] resolved occupations ({len(occs)}): {occs[:12]}{'...' if len(occs) > 12 else ''}")
+
     if not occs:
-        print(f"[WARN] No occupations for clusters={args.clusters}")
+        print("[ERROR] No occupations found for the requested clusters. Check dictionaries/occupations_by_cluster.json")
+        sys.exit(0)  # keep the workflow green but clear message
 
-    sparql = SPARQLWrapper(WD_ENDPOINT, agent="Name-Profession-Pipeline/1.0 (GitHub Actions)")
-    # Mild etiquette
-    sparql.setTimeout(60)
-
-    template = (base/"queries"/"query_template.sparql").read_text(encoding="utf-8")
+    tmpl = TEMPLATE.read_text(encoding="utf-8")
+    for token in ("{LANGS}", "{LIMIT}", "{OCCUPATION_FILTER}", "{SURNAME_FILTER}"):
+        if token not in tmpl:
+            print(f"[ERROR] Template missing placeholder {token}.")
+            sys.exit(0)
 
     rows = []
+    first_query_logged = False
+
     for occ in occs:
-        variants = surname_variants.get(occ, [])
-        if not variants:
-            print(f"[OPEN SKIP] No surname patterns for occ={occ}")
+        prefixes = surname_variants.get(occ, [])
+        if not prefixes:
+            print(f"[SKIP] No surname prefixes for occ={occ}")
             continue
 
-        sregex = build_surname_regex(variants)
+        sregex = safe_prefix_regex(prefixes)
         if not sregex:
-            print(f"[OPEN SKIP] Empty regex for occ={occ}")
+            print(f"[SKIP] Empty regex after cleaning for occ={occ}")
             continue
 
-        occ_block = build_occ_filter(occ, args.mode)
-        sn_block  = f'FILTER(REGEX(STR(?surnameLabel), "{sregex}", "i"))'
+        occ_block = occ_filter_block(occ, args.mode)
+        query = compile_query(tmpl, args.langs, args.limit, sregex, occ_block)
 
-        q = (template
-             .replace("{LANGS}", args.langs)
-             .replace("{LIMIT}", str(args.limit))
-             .replace("{OCCUPATION_FILTER}", occ_block)
-             .replace("{SURNAME_FILTER}", sn_block))
+        if not first_query_logged:
+            print("----- [DEBUG] First compiled SPARQL query -----")
+            print(query)
+            print("------------------------------------------------")
+            first_query_logged = True
 
-        print(f"[FILTER] occ={occ} mode={args.mode} regex={sregex}")
-        data = run_query(sparql, q)
+        data = run_sparql(query)
         bindings = data.get("results", {}).get("bindings", [])
         print(f"[OPEN RAW] rows={len(bindings)} for occ={occ}")
 
         for b in bindings:
             rows.append([
-                b.get("person"          ,{}).get("value",""),
-                b.get("personLabel"     ,{}).get("value",""),
-                b.get("surnameLabel"    ,{}).get("value",""),
-                b.get("occupationLabel" ,{}).get("value",""),
-                # cluster tag: first cluster containing this occ
-                next((cl for cl,v in occ_by_cluster.items() if occ in v), "")
+                b.get("person",{}).get("value",""),
+                b.get("personLabel",{}).get("value",""),
+                b.get("surnameLabel",{}).get("value",""),
+                b.get("occupationLabel",{}).get("value",""),
+                # cluster tag: first matching requested cluster for this occupation
+                next((cl for cl, occs_ in occ_by_cluster.items() if occ in occs_), "")
             ])
-
-        # be polite to endpoint
-        time.sleep(0.3)
+        time.sleep(0.25)  # be polite
 
     outp = Path(args.outfile)
     outp.parent.mkdir(parents=True, exist_ok=True)
@@ -120,11 +138,8 @@ def main():
             w = csv.writer(f)
             w.writerow(["person","personLabel","surnameLabel","occupationLabel","cluster"])
             w.writerows(rows)
-        print(f"[WRITE] {len(rows)} → {outp}")
+        print(f"[WRITE] {len(rows)} -> {outp}")
     else:
-        # Ensure no stale file tricks later steps
-        if outp.exists():
-            outp.unlink()
         print("[WRITE] No candidates produced; nothing written.")
 
 if __name__ == "__main__":
