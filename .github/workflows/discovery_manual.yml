@@ -1,4 +1,4 @@
-name: Discovery (Manual)
+name: Discovery (Manual — ARCHIVED)
 
 on:
   workflow_dispatch:
