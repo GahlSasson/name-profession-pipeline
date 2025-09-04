@@ -1,4 +1,5 @@
 name: Discovery (Manual — PROD)
+
 on:
   workflow_dispatch:
     inputs:
@@ -43,10 +44,10 @@ jobs:
       # 4) Quick visibility: what inputs were passed
       - name: Show chosen inputs
         run: |
-          echo "clusters=${{ github.event.inputs.clusters }}"
-          echo "limit=${{ github.event.inputs.limit }}"
-          echo "langs=${{ github.event.inputs.langs }}"
-          echo "mode=${{ github.event.inputs.mode }}"
+          echo "clusters=${{ inputs.clusters }}"
+          echo "limit=${{ inputs.limit }}"
+          echo "langs=${{ inputs.langs }}"
+          echo "mode=${{ inputs.mode }}"
 
       # 5) Make sure the SPARQL template still has placeholders
       - name: Show SPARQL template header (sanity)
@@ -55,20 +56,20 @@ jobs:
           sed -n '1,40p' queries/query_template.sparql || true
           echo "---- Checking placeholders:"
           # These must appear literally in the file
-          grep -q "{LANGS}" queries/query_template.sparql   && echo "✓ {LANGS} ok"   || echo "✗ {LANGS} missing"
-          grep -q "{LIMIT}" queries/query_template.sparql   && echo "✓ {LIMIT} ok"   || echo "✗ {LIMIT} missing"
-          grep -q "{OCCUPATION_FILTER}" queries/query_template.sparql && echo "✓ {OCCUPATION_FILTER} ok" || echo "✗ {OCCUPATION_FILTER} missing"
-          grep -q "{SURNAME_FILTER}" queries/query_template.sparql    && echo "✓ {SURNAME_FILTER} ok"    || echo "✗ {SURNAME_FILTER} missing"
+          grep -q "{LANGS}" queries/query_template.sparql   && echo "✓ {LANGS} ok"   || (echo "✗ {LANGS} missing"; exit 1)
+          grep -q "{LIMIT}" queries/query_template.sparql   && echo "✓ {LIMIT} ok"   || (echo "✗ {LIMIT} missing"; exit 1)
+          grep -q "{OCCUPATION_FILTER}" queries/query_template.sparql && echo "✓ {OCCUPATION_FILTER} ok" || (echo "✗ {OCCUPATION_FILTER} missing"; exit 1)
+          grep -q "{SURNAME_FILTER}" queries/query_template.sparql    && echo "✓ {SURNAME_FILTER} ok"    || (echo "✗ {SURNAME_FILTER} missing"; exit 1)
 
       # 6) Run the discovery script (writes data/candidates_raw.csv)
       - name: Run discovery
         run: |
           mkdir -p data
           python scripts/wikidata_nomen_agent.py \
-            --clusters "${{ github.event.inputs.clusters }}" \
-            --limit    ${{ github.event.inputs.limit }} \
-            --langs    "${{ github.event.inputs.langs }}" \
-            --mode     "${{ github.event.inputs.mode }}" \
+            --clusters "${{ inputs.clusters }}" \
+            --limit    ${{ inputs.limit }} \
+            --langs    "${{ inputs.langs }}" \
+            --mode     "${{ inputs.mode }}" \
             --outfile  "data/candidates_raw.csv"
 
       # 7) Debug so we can see what happened
