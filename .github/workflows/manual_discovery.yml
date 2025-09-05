@@ -3,100 +3,39 @@ name: Discovery (Manual — PROD)
 on:
   workflow_dispatch:
     inputs:
-      clusters:
-        description: "Comma-separated clusters (e.g., Trades,Arts,Law,Agriculture,Medicine)"
-        required: true
-        default: "Trades"
-      limit:
-        description: "Per-occupation result limit (smaller is safer while testing)"
-        required: false
-        default: "40"
-      langs:
-        description: "Wikidata label language order (comma-separated)"
-        required: false
-        default: "en"
-      mode:
-        description: "open (wide, pattern-based) or strict (curated)"
-        required: false
-        default: "open"
+      clusters: { description: "Clusters (e.g., Trades)", default: "Trades" }
+      limit:    { description: "Row limit", default: "40" }
+      langs:    { description: "Label languages", default: "en" }
+      mode:     { description: "open or strict", default: "open" }
 
 jobs:
-  sanity:
+  run:
     runs-on: ubuntu-latest
-
     steps:
-      # 1) Checkout source
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 2) Python runtime
       - name: Set up Python
         uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: { python-version: '3.11' }
 
-      # 3) Dependencies
-      - name: Install Python dependencies
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install SPARQLWrapper pandas rapidfuzz Metaphone requests
+          pip install SPARQLWrapper requests
 
-      # 4) Quick visibility: what inputs were passed
-      - name: Show chosen inputs
+      - name: Preflight (show files)
         run: |
-          echo "clusters=${{ inputs.clusters }}"
-          echo "limit=${{ inputs.limit }}"
-          echo "langs=${{ inputs.langs }}"
-          echo "mode=${{ inputs.mode }}"
+          echo "== query template head =="; sed -n '1,60p' queries/query_template.sparql || true
+          echo "== clusters JSON head =="; sed -n '1,120p' dictionaries/occupations_by_cluster.json || true
 
-      # 5) Make sure the SPARQL template still has placeholders
-      - name: Show SPARQL template header (sanity)
-        run: |
-          echo "First 40 lines of queries/query_template.sparql:"
-          sed -n '1,40p' queries/query_template.sparql || true
-          echo "---- Checking placeholders:"
-          # These must appear literally in the file
-          grep -q "{LANGS}" queries/query_template.sparql   && echo "✓ {LANGS} ok"   || (echo "✗ {LANGS} missing"; exit 1)
-          grep -q "{LIMIT}" queries/query_template.sparql   && echo "✓ {LIMIT} ok"   || (echo "✗ {LIMIT} missing"; exit 1)
-          grep -q "{OCCUPATION_FILTER}" queries/query_template.sparql && echo "✓ {OCCUPATION_FILTER} ok" || (echo "✗ {OCCUPATION_FILTER} missing"; exit 1)
-          grep -q "{SURNAME_FILTER}" queries/query_template.sparql    && echo "✓ {SURNAME_FILTER} ok"    || (echo "✗ {SURNAME_FILTER} missing"; exit 1)
-
-      # 6) Run the discovery script (writes data/candidates_raw.csv)
-      - name: Run discovery
-        run: |
-          mkdir -p data
-          python scripts/wikidata_nomen_agent.py \
-            --clusters "${{ inputs.clusters }}" \
-            --limit    ${{ inputs.limit }} \
-            --langs    "${{ inputs.langs }}" \
-            --mode     "${{ inputs.mode }}" \
-            --outfile  "data/candidates_raw.csv"
-
-      # 7) Debug so we can see what happened
-      - name: Debug output (if any)
-        run: |
-          echo "Data dir contents:"
-          ls -l data || true
-          echo "CSV line count:"
-          wc -l data/candidates_raw.csv || true
-          echo "First 5 lines:"
-          head -n 5 data/candidates_raw.csv || true
-
-      # 8) Upload to Airtable if (and only if) a CSV was actually produced
-      - name: Upload to Airtable (only if CSV exists)
-        if: ${{ hashFiles('data/candidates_raw.csv') != '' }}
+      - name: Orchestrate discovery → CSV → Airtable
         env:
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }} # set to table ID
         run: |
-          python scripts/push_to_airtable.py --csv data/candidates_raw.csv
-
-      # 9) Friendly guidance if nothing was written
-      - name: No CSV produced (read this)
-        if: ${{ hashFiles('data/candidates_raw.csv') == '' }}
-        run: |
-          echo "No CSV produced."
-          echo "Try a smaller --limit (e.g., 30) and simpler langs='en'."
-          echo "Also confirm queries/query_template.sparql still contains:"
-          echo "  {LANGS} {LIMIT} {OCCUPATION_FILTER} {SURNAME_FILTER}"
+          python scripts/orchestrate_nomen.py \
+            --clusters "${{ github.event.inputs.clusters }}" \
+            --limit "${{ github.event.inputs.limit }}" \
+            --langs "${{ github.event.inputs.langs }}" \
+            --mode "${{ github.event.inputs.mode }}"
