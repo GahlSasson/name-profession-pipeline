@@ -42,7 +42,6 @@ def run_discovery(clusters: List[str], limit: int, langs: List[str], surnames: L
         {"full_name": "Leonardo da Vinci", "occupation": "Artist", "cluster": "Arts", "lang": "it"},
         {"full_name": "Katherine Johnson", "occupation": "Mathematician", "cluster": "Science", "lang": "en"},
     ]
-    # Filter by clusters/langs/surnames lightly to simulate behavior
     rows = [
         r for r in base_rows
         if (not clusters or r["cluster"] in clusters)
@@ -54,18 +53,15 @@ def run_discovery(clusters: List[str], limit: int, langs: List[str], surnames: L
 
 def main():
     args = parse_args()
-
     clusters = [c.strip() for c in args.clusters.split(",") if c.strip()]
     langs = [l.strip() for l in args.langs.split(",") if l.strip()]
     surnames = [s.strip() for s in args.surname_filter.split(",") if s.strip()]
 
-    # Run discovery
     rows = run_discovery(clusters, args.limit, langs, surnames)
 
-    # Define your canonical CSV schema here.
+    # Canonical CSV schema — keep consistent with upload field_map.
     fieldnames = ["full_name", "occupation", "cluster", "lang"]
 
-    # Ensure path & write file
     out_path = ensure_parent(args.out)
     write_csv(out_path, rows, fieldnames)
 
