@@ -1,4 +1,8 @@
-name: Discovery (Manual - PROD)
+# Single-file, self-diagnosing Airtable pipeline
+# Place this file at: .github/workflows/discovery-manual-prod.yml
+# Requires repo secrets: AIRTABLE_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID
+
+name: Discovery Manual PROD
 
 on:
   workflow_dispatch:
@@ -39,77 +43,59 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests tenacity
+          python -m pip install requests
 
-      - name: Debug - show IDs are present
+      - name: Debug — verify secrets/inputs
         run: |
           echo "AIRTABLE_TOKEN set? $([[ -n \"$AIRTABLE_TOKEN\" ]] && echo YES || echo NO)"
           echo "AIRTABLE_BASE_ID: ${AIRTABLE_BASE_ID}"
           echo "AIRTABLE_TABLE_ID: ${AIRTABLE_TABLE_ID}"
+          echo "Inputs — clusters: ${{ github.event.inputs.clusters }}, limit: ${{ github.event.inputs.limit }}, langs: ${{ github.event.inputs.langs }}, surnames: ${{ github.event.inputs.surname_filter }}"
 
-      - name: Airtable healthcheck (token/base/table)
+      - name: Airtable healthcheck (token, base, table)
         run: |
           python - << 'PY'
-          import os, sys, json, urllib.parse, requests
-          TOKEN = os.getenv("AIRTABLE_TOKEN")
-          BASE  = os.getenv("AIRTABLE_BASE_ID")
-          TABLE = os.getenv("AIRTABLE_TABLE_ID")
-          if not TOKEN: sys.exit("[-] Missing AIRTABLE_TOKEN secret.")
-          if not BASE:  sys.exit("[-] Missing AIRTABLE_BASE_ID secret.")
-          if not TABLE: sys.exit("[-] Missing AIRTABLE_TABLE_ID secret.")
-
-          def get(url, json_ct=False):
-            h = {"Authorization": f"Bearer {TOKEN}"}
-            if json_ct: h["Content-Type"] = "application/json"
-            r = requests.get(url, headers=h, timeout=30)
-            return r
-
-          # 1) Try listing 1 record from the target table
-          enc_table = urllib.parse.quote(TABLE, safe="")
-          url = f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=1"
-          r = get(url, True)
-          if r.status_code == 404:
-            print(f"[-] 404 Not Found when listing records. Check BASE ({BASE}) and TABLE ({TABLE}) IDs.")
-            print(f"    URL tried: {url}")
-            sys.exit(4)
-          if r.status_code in (401,403):
-            print(f"[-] {r.status_code} Unauthorized/Forbidden: Token lacks access or is invalid for base/table.")
-            sys.exit(5)
-          if r.status_code >= 400:
-            print(f"[-] Error {r.status_code}: {r.text}")
-            sys.exit(6)
-          print("[+] List 1 record: OK")
-          try:
-            data = r.json()
-            print(f"[i] Returned {len(data.get('records', []))} preview record(s).")
-          except Exception as e:
-            print(f"[i] Could not parse list response JSON cleanly: {e}")
-
-          # 2) Attempt schema fetch (optional scope schema.bases:read)
-          meta_url = f"https://api.airtable.com/v0/meta/bases/{BASE}/tables"
-          mr = get(meta_url)
-          if mr.status_code in (401,403):
-            print("[i] Schema fetch not permitted (no schema.bases:read). Skipping.")
-          elif mr.status_code >= 400:
-            print(f"[i] Schema fetch error {mr.status_code}: {mr.text}")
+          import os, sys, urllib.parse, requests, json
+          TOKEN=os.getenv("AIRTABLE_TOKEN"); BASE=os.getenv("AIRTABLE_BASE_ID"); TABLE=os.getenv("AIRTABLE_TABLE_ID")
+          if not TOKEN: sys.exit("[-] Missing AIRTABLE_TOKEN (set repo secret).")
+          if not BASE: sys.exit("[-] Missing AIRTABLE_BASE_ID (set repo secret).")
+          if not TABLE: sys.exit("[-] Missing AIRTABLE_TABLE_ID (set repo secret).")
+          hdr={"Authorization":f"Bearer {TOKEN}"}
+          enc_table=urllib.parse.quote(TABLE, safe="")
+          list_url=f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=1"
+          r=requests.get(list_url,headers=hdr,timeout=30)
+          print(f"[Healthcheck] GET {list_url} -> {r.status_code}")
+          if r.status_code==404:
+            print("[-] 404 Not Found. Check BASE and TABLE IDs exactly. Listing tables to help...")
+          elif r.status_code in (401,403):
+            sys.exit(f"[-] {r.status_code} Unauthorized/Forbidden. Token lacks access to this base/table or is invalid.")
+          elif r.status_code>=400:
+            sys.exit(f"[-] {r.status_code} Error: {r.text}")
           else:
-            j = mr.json()
-            # print concise field list for the target table if found
-            target = None
-            for t in j.get("tables", []):
-              if t.get("id") == TABLE or t.get("name") == TABLE:
-                target = t; break
-            if target:
-              fields = [f["name"] for f in target.get("fields", [])]
-              print(f"[+] Detected table fields: {fields}")
-            else:
-              print("[i] Target table not found by id/name in schema listing.")
+            try:
+              js=r.json()
+              print(f"[Healthcheck] Preview records returned: {len(js.get('records',[]))}")
+            except: pass
+          # Try meta tables (optional scope); if no access, continue.
+          meta=f"https://api.airtable.com/v0/meta/bases/{BASE}/tables"
+          mr=requests.get(meta,headers=hdr,timeout=30)
+          print(f"[Healthcheck] GET {meta} -> {mr.status_code}")
+          if mr.status_code==200:
+            data=mr.json()
+            pairs=[(t.get('id'),t.get('name')) for t in data.get('tables',[])]
+            print("[Healthcheck] Tables (id -> name):")
+            for tid,tn in pairs: print(f"  {tid} -> {tn}")
+            if not any(tid==TABLE or tn==TABLE for tid,tn in pairs):
+              print("[-] Target table NOT found by id or name above. Use one of the ids or names shown.")
+              sys.exit(2)
+          elif mr.status_code in (401,403):
+            print("[Healthcheck] Schema listing not permitted (no schema.bases:read). Continuing.")
+          else:
+            print(f"[Healthcheck] Meta listing error {mr.status_code}: {mr.text}. Continuing.")
+          print("[Healthcheck] OK to proceed.")
           PY
 
-      - name: Ensure data dir
-        run: mkdir -p data
-
-      - name: Run discovery to produce CSV (inline)
+      - name: Generate CSV (inline)
         env:
           CLUSTERS: ${{ github.event.inputs.clusters }}
           LIMIT: ${{ github.event.inputs.limit }}
@@ -118,128 +104,84 @@ jobs:
         run: |
           python - << 'PY'
           import os, csv, pathlib
-          clusters = [c.strip() for c in os.getenv("CLUSTERS","").split(",") if c.strip()]
-          try:
-            limit = int(os.getenv("LIMIT","5"))
-          except:
-            limit = 5
-          langs = [l.strip() for l in os.getenv("LANGS","en").split(",") if l.strip()]
-          surnames = [s.strip().lower() for s in os.getenv("SURNAME_FILTER","").split(",") if s.strip()]
-
-          rows_base = [
-              {"full_name":"Ada Lovelace","occupation":"Mathematician","cluster":"Arts","lang":"en"},
-              {"full_name":"Nikola Tesla","occupation":"Engineer","cluster":"Trades","lang":"en"},
-              {"full_name":"Marie Curie","occupation":"Physicist","cluster":"Medicine","lang":"en"},
-              {"full_name":"Leonardo da Vinci","occupation":"Artist","cluster":"Arts","lang":"it"},
-              {"full_name":"Katherine Johnson","occupation":"Mathematician","cluster":"Science","lang":"en"},
+          clusters=[c.strip() for c in os.getenv("CLUSTERS","").split(",") if c.strip()]
+          try: limit=int(os.getenv("LIMIT","5"))
+          except: limit=5
+          langs=[l.strip() for l in os.getenv("LANGS","en").split(",") if l.strip()]
+          surnames=[s.strip().lower() for s in os.getenv("SURNAME_FILTER","").split(",") if s.strip()]
+          base_rows=[
+            {"full_name":"Ada Lovelace","occupation":"Mathematician","cluster":"Arts","lang":"en"},
+            {"full_name":"Nikola Tesla","occupation":"Engineer","cluster":"Trades","lang":"en"},
+            {"full_name":"Marie Curie","occupation":"Physicist","cluster":"Medicine","lang":"en"},
+            {"full_name":"Leonardo da Vinci","occupation":"Artist","cluster":"Arts","lang":"it"},
+            {"full_name":"Katherine Johnson","occupation":"Mathematician","cluster":"Science","lang":"en"},
           ]
-          rows = [r for r in rows_base
-                  if (not clusters or r["cluster"] in clusters)
-                  and (not langs or r["lang"] in langs)
-                  and (not surnames or r["full_name"].split()[-1].lower() in surnames)]
+          rows=[r for r in base_rows
+                if (not clusters or r["cluster"] in clusters)
+                and (not langs or r["lang"] in langs)
+                and (not surnames or r["full_name"].split()[-1].lower() in surnames)]
           if not rows:
-              rows = [{"full_name":"Test Person","occupation":"Tester","cluster":(clusters[0] if clusters else "Trades"),"lang":(langs[0] if langs else "en")}]
-          rows = rows[:max(1, limit)]
-
-          out = pathlib.Path("data/candidates_raw.csv")
-          out.parent.mkdir(parents=True, exist_ok=True)
-          with open(out, "w", newline="", encoding="utf-8") as f:
-              w = csv.DictWriter(f, fieldnames=["full_name","occupation","cluster","lang"])
-              w.writeheader()
-              for r in rows: w.writerow(r)
-          print(f"[+] Wrote {len(rows)} rows to {out}")
+            rows=[{"full_name":"Test Person","occupation":"Tester","cluster":(clusters[0] if clusters else "Trades"),"lang":(langs[0] if langs else "en")}]
+          rows=rows[:max(1,limit)]
+          out=pathlib.Path("data/candidates_raw.csv"); out.parent.mkdir(parents=True, exist_ok=True)
+          with open(out,"w",newline="",encoding="utf-8") as f:
+            w=csv.DictWriter(f,fieldnames=["full_name","occupation","cluster","lang"])
+            w.writeheader()
+            w.writerows(rows)
+          print(f"[CSV] Wrote {len(rows)} rows -> {out}")
           PY
 
-      - name: Fail if no CSV
-        run: |
-          echo "Data dir contents:"; ls -lah data || true
-          test -f data/candidates_raw.csv || (echo "No CSV produced." && exit 1)
-
-      - name: Show CSV sample
+      - name: Show CSV
         run: |
           echo "CSV line count:"; wc -l data/candidates_raw.csv
-          echo "First 5 lines:"; head -n 5 data/candidates_raw.csv
+          echo "Preview:"; head -n 5 data/candidates_raw.csv
 
-      - name: Upload to Airtable (inline)
+      - name: Upload to Airtable (inline, typecast on)
         run: |
           python - << 'PY'
-          import os, sys, csv, json, time, urllib.parse, requests
-          TOKEN = os.getenv("AIRTABLE_TOKEN")
-          BASE  = os.getenv("AIRTABLE_BASE_ID")
-          TABLE = os.getenv("AIRTABLE_TABLE_ID")
-          CSV_PATH = "data/candidates_raw.csv"
-          EXPECTED_MAP = {
-              "full_name": "Full Name",
-              "occupation": "Occupation",
-              "cluster": "Profession Cluster",
-              "lang": "Language",
-          }
-          if not TOKEN or not BASE or not TABLE:
-              sys.exit("[-] Missing AIRTABLE_* env vars.")
-
-          def get(url, headers):
-              return requests.get(url, headers=headers, timeout=30)
-
-          def post(url, headers, payload):
-              return requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
-
-          hdr = {"Authorization": f"Bearer {TOKEN}", "Content-Type":"application/json"}
-
-          # Try to fetch schema to know field names (optional)
-          table_fields = None
-          meta_url = f"https://api.airtable.com/v0/meta/bases/{BASE}/tables"
-          mr = get(meta_url, {"Authorization": f"Bearer {TOKEN}"})
-          if mr.status_code in (200,):
-              j = mr.json()
-              for t in j.get("tables", []):
-                  if t.get("id") == TABLE or t.get("name") == TABLE:
-                      table_fields = [f["name"] for f in t.get("fields", [])]
-                      print(f"[i] Detected table fields: {table_fields}")
-                      break
+          import os, sys, csv, time, urllib.parse, requests, json
+          TOKEN=os.getenv("AIRTABLE_TOKEN"); BASE=os.getenv("AIRTABLE_BASE_ID"); TABLE=os.getenv("AIRTABLE_TABLE_ID")
+          if not (TOKEN and BASE and TABLE): sys.exit("[-] Missing AIRTABLE_* env vars.")
+          hdr={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"}
+          enc_table=urllib.parse.quote(TABLE, safe="")
+          url=f"https://api.airtable.com/v0/{BASE}/{enc_table}?typecast=true"
+          EXPECTED={"full_name":"Full Name","occupation":"Occupation","cluster":"Profession Cluster","lang":"Language"}
+          # Try to fetch table schema (optional)
+          table_fields=None
+          mr=requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables",headers={"Authorization":f"Bearer {TOKEN}"},timeout=30)
+          if mr.status_code==200:
+            for t in mr.json().get("tables",[]):
+              if t.get("id")==TABLE or t.get("name")==TABLE:
+                table_fields=[f["name"] for f in t.get("fields",[])]
+                print(f"[Uploader] Detected fields: {table_fields}")
+                break
           else:
-              print(f"[i] Schema fetch not available or not permitted (status {mr.status_code}). Proceeding without it.")
-
-          if table_fields:
-              field_map = {csv_col: at for csv_col, at in EXPECTED_MAP.items() if at in table_fields}
-              missing = [at for at in EXPECTED_MAP.values() if at not in table_fields]
-              if missing:
-                  print(f"[i] These expected fields are missing in Airtable (upload will skip them): {missing}")
-          else:
-              field_map = EXPECTED_MAP
-
+            print(f"[Uploader] Schema fetch not permitted/status {mr.status_code}. Proceeding.")
+          field_map=EXPECTED if not table_fields else {k:v for k,v in EXPECTED.items() if v in table_fields}
           if not field_map:
-              sys.exit("[-] No matching fields between CSV and Airtable table. Create fields: " + ", ".join(EXPECTED_MAP.values()))
-
-          # Build records from CSV
-          records = []
-          with open(CSV_PATH, newline="", encoding="utf-8") as f:
-              reader = csv.DictReader(f)
-              for row in reader:
-                  fields = {}
-                  for k, v in row.items():
-                      if k in field_map and v not in (None, ""):
-                          fields[field_map[k]] = v
-                  if fields:
-                      records.append({"fields": fields})
-          if not records:
-              print("[i] CSV had no rows; nothing to upload.")
-              sys.exit(0)
-
+            sys.exit("[-] No matching fields between CSV and Airtable. Create fields: " + ", ".join(EXPECTED.values()))
+          # Build records
+          recs=[]
+          with open("data/candidates_raw.csv",newline="",encoding="utf-8") as f:
+            r=csv.DictReader(f)
+            for row in r:
+              fields={}
+              for k,v in row.items():
+                if k in field_map and v not in (None,""): fields[field_map[k]]=v
+              if fields: recs.append({"fields":fields})
+          if not recs: 
+            print("[Uploader] CSV had no rows; nothing to upload."); sys.exit(0)
           # Upload in batches of 10
-          url = f"https://api.airtable.com/v0/{BASE}/{urllib.parse.quote(TABLE, safe='')}"
-          batch_size = 10
-          total = 0
-          for i in range(0, len(records), batch_size):
-              batch = records[i:i+batch_size]
-              r = post(url, hdr, {"records": batch})
-              if r.status_code >= 400:
-                  print(f"[-] Upload error {r.status_code}: {r.text}")
-                  print("[!] If 422, ensure Airtable fields (case-sensitive) exist and accept provided values:")
-                  print("    " + ", ".join(EXPECTED_MAP.values()))
-                  sys.exit(1)
-              total += len(batch)
-              print(f"[+] Uploaded batch {i//batch_size + 1}: {len(batch)} rows")
-              time.sleep(0.25)
-
-          print(f"[+] Uploaded {total} record(s) to table {TABLE} in base {BASE}.")
+          total=0
+          for i in range(0,len(recs),10):
+            batch=recs[i:i+10]
+            resp=requests.post(url,headers=hdr,data=json.dumps({"records":batch}),timeout=60)
+            if resp.status_code>=400:
+              print(f"[-] Upload error {resp.status_code}: {resp.text}")
+              print("[!] If 422, ensure fields exist with exact names:", ", ".join(EXPECTED.values()))
+              sys.exit(1)
+            total+=len(batch)
+            print(f"[Uploader] Uploaded batch {i//10+1}: {len(batch)} rows")
+            time.sleep(0.25)
+          print(f"[Uploader] Uploaded {total} record(s) to {TABLE} in base {BASE}.")
           PY
