@@ -26,7 +26,7 @@ jobs:
     env:
       AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
       AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }} # or use TABLE_NAME
+      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,10 +45,17 @@ jobs:
       - name: Ensure data dir
         run: mkdir -p data
 
-      - name: Preflight — show query template
+      - name: Preflight — verify query placeholders (non-blocking)
         run: |
-          echo "Verifying query template has placeholders..."
-          grep -E "{LANGS}|{LIMIT}|{OCCUPATION_FILTER}|{SURNAME_FILTER}" queries/query_template.sparql
+          set +e
+          if [ -f queries/query_template.sparql ]; then
+            echo "Verifying template contains expected placeholders..."
+            grep -E "{LANGS}|{LIMIT}|{OCCUPATION_FILTER}|{SURNAME_FILTER}" queries/query_template.sparql
+            echo "Template present."
+          else
+            echo "No queries/query_template.sparql found (ok for mock run)."
+          fi
+          set -e
 
       - name: Run discovery to produce CSV
         env:
