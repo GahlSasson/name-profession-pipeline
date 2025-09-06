@@ -1,258 +1,160 @@
-# Save as: .github/workflows/discovery-manual-prod.yml
-# Single-file robust pipeline that:
-# 1) Verifies secrets & Airtable access
-# 2) Generates a CSV inline
-# 3) Uploads with smart field mapping + fallbacks (never 422-fail if table exists)
-#
-# REQUIRED REPO SECRETS:
-#   AIRTABLE_TOKEN      -> Airtable Personal Access Token with base access
-#   AIRTABLE_BASE_ID    -> e.g., apprubc2DbwI5i9c1
-#   AIRTABLE_TABLE_ID   -> table ID (e.g., tblfQGm6qAKqrphQL) OR the table NAME
-
 name: Discovery Manual PROD
-
 on:
   workflow_dispatch:
     inputs:
-      clusters:
-        description: "Comma-separated clusters (e.g., Trades,Arts,Law,Agriculture,Medicine)"
-        required: true
-        default: "Trades"
-      limit:
-        description: "Per-occupation result limit"
-        required: true
-        default: "5"
-      langs:
-        description: "Comma-separated language codes (e.g., en)"
-        required: true
-        default: "en"
-      surname_filter:
-        description: "(Optional) Comma-separated surnames to filter (or leave blank)"
-        required: false
-        default: ""
+      clusters: { description: "Comma-separated clusters", required: true, default: "Trades" }
+      limit:    { description: "Per-occupation result limit", required: true, default: "5" }
+      langs:    { description: "Comma-separated language codes", required: true, default: "en" }
 
 jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}       # you already set this
+      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}     # optional fallback (not required)
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}     # apprubc2DbwI5i9c1
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}    # optional; we’ll use NAME if not set
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}  # you already set this
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install requests
+        run: python -m pip install --upgrade pip && python -m pip install requests
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install requests
-
-      - name: Debug — verify secrets/inputs
-        run: |
-          echo "AIRTABLE_TOKEN set? $([[ -n \"$AIRTABLE_TOKEN\" ]] && echo YES || echo NO)"
-          echo "AIRTABLE_BASE_ID: ${AIRTABLE_BASE_ID}"
-          echo "AIRTABLE_TABLE_ID: ${AIRTABLE_TABLE_ID}"
-          echo "Inputs — clusters: ${{ github.event.inputs.clusters }}, limit: ${{ github.event.inputs.limit }}, langs: ${{ github.event.inputs.langs }}, surnames: ${{ github.event.inputs.surname_filter }}"
-
-      - name: Airtable access check (token/base/table)
-        run: |
-          python - << 'PY'
-          import os, sys, urllib.parse, requests
-          TOKEN=os.getenv("AIRTABLE_TOKEN"); BASE=os.getenv("AIRTABLE_BASE_ID"); TABLE=os.getenv("AIRTABLE_TABLE_ID")
-          if not TOKEN: sys.exit("[-] Missing AIRTABLE_TOKEN (set repo secret).")
-          if not BASE: sys.exit("[-] Missing AIRTABLE_BASE_ID (set repo secret).")
-          if not TABLE: sys.exit("[-] Missing AIRTABLE_TABLE_ID (set repo secret).")
-          hdr={"Authorization":f"Bearer {TOKEN}"}
-          enc_table=urllib.parse.quote(TABLE, safe="")
-          url=f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=1"
-          r=requests.get(url,headers=hdr,timeout=30)
-          print(f"[Healthcheck] GET {url} -> {r.status_code}")
-          if r.status_code in (401,403):
-            sys.exit(f"[-] {r.status_code} Unauthorized/Forbidden. Token lacks access to this base/table or is invalid.")
-          if r.status_code==404:
-            print("[-] 404 Not Found: BASE or TABLE ID/Name is wrong. Listing tables (if permitted) for hints...")
-          elif r.status_code>=400:
-            sys.exit(f"[-] {r.status_code} Error: {r.text}")
-          # Try meta list for table hints (optional scope)
-          m=f"https://api.airtable.com/v0/meta/bases/{BASE}/tables"
-          mr=requests.get(m,headers=hdr,timeout=30)
-          print(f"[Healthcheck] GET {m} -> {mr.status_code}")
-          if mr.status_code==200:
-            pairs=[(t.get('id'),t.get('name')) for t in mr.json().get('tables',[])]
-            print("[Healthcheck] Tables (id -> name):")
-            for tid,tn in pairs: print(f"  {tid} -> {tn}")
-          else:
-            print("[Healthcheck] Table list not permitted (no schema scope) — continuing.")
-          print("[Healthcheck] Proceeding.")
-          PY
-
-      - name: Generate CSV (inline)
+      # ---- Generate a small CSV (replace this block later with your discovery step) ----
+      - name: Generate CSV (mock data for pipeline test)
         env:
           CLUSTERS: ${{ github.event.inputs.clusters }}
-          LIMIT: ${{ github.event.inputs.limit }}
-          LANGS: ${{ github.event.inputs.langs }}
-          SURNAME_FILTER: ${{ github.event.inputs.surname_filter }}
+          LIMIT:    ${{ github.event.inputs.limit }}
+          LANGS:    ${{ github.event.inputs.langs }}
         run: |
-          python - << 'PY'
+          python - <<'PY'
           import os, csv, pathlib
           clusters=[c.strip() for c in os.getenv("CLUSTERS","").split(",") if c.strip()]
           try: limit=int(os.getenv("LIMIT","5"))
           except: limit=5
           langs=[l.strip() for l in os.getenv("LANGS","en").split(",") if l.strip()]
-          surnames=[s.strip().lower() for s in os.getenv("SURNAME_FILTER","").split(",") if s.strip()]
-          base_rows=[
-            {"full_name":"Ada Lovelace","occupation":"Mathematician","cluster":"Arts","lang":"en"},
+
+          rows=[
+            {"full_name":"Ada Lovelace","occupation":"Mathematician","cluster":"Science","lang":"en"},
             {"full_name":"Nikola Tesla","occupation":"Engineer","cluster":"Trades","lang":"en"},
-            {"full_name":"Marie Curie","occupation":"Physicist","cluster":"Medicine","lang":"en"},
             {"full_name":"Leonardo da Vinci","occupation":"Artist","cluster":"Arts","lang":"it"},
-            {"full_name":"Katherine Johnson","occupation":"Mathematician","cluster":"Science","lang":"en"},
           ]
-          rows=[r for r in base_rows
-                if (not clusters or r["cluster"] in clusters)
-                and (not langs or r["lang"] in langs)
-                and (not surnames or r["full_name"].split()[-1].lower() in surnames)]
+          rows=[r for r in rows if (not clusters or r["cluster"] in clusters) and (not langs or r["lang"] in langs)]
           if not rows:
             rows=[{"full_name":"Test Person","occupation":"Tester","cluster":(clusters[0] if clusters else "Trades"),"lang":(langs[0] if langs else "en")}]
-          rows=rows[:max(1,limit)]
-          out=pathlib.Path("data/candidates_raw.csv"); out.parent.mkdir(parents=True, exist_ok=True)
-          with open(out,"w",newline="",encoding="utf-8") as f:
+
+          p=pathlib.Path("data"); p.mkdir(parents=True, exist_ok=True)
+          with open("data/candidates_raw.csv","w",newline="",encoding="utf-8") as f:
             w=csv.DictWriter(f,fieldnames=["full_name","occupation","cluster","lang"])
             w.writeheader(); w.writerows(rows)
-          print(f"[CSV] Wrote {len(rows)} rows -> {out}")
+          print("[CSV] wrote", len(rows), "rows -> data/candidates_raw.csv")
           PY
 
       - name: Show CSV
         run: |
-          echo "CSV line count:"; wc -l data/candidates_raw.csv
-          echo "Preview:"; head -n 5 data/candidates_raw.csv
+          echo "linecount:"; wc -l data/candidates_raw.csv
+          echo "preview:"; head -n 5 data/candidates_raw.csv
 
-      - name: Upload to Airtable with smart mapping & fallbacks (inline)
+      # ---- Upload CSV to Airtable (auto-detects your actual column names) ----
+      - name: Upload CSV (field-aware; writes lang to all language* fields)
         run: |
-          python - << 'PY'
-          import os, sys, csv, json, time, urllib.parse, requests, re
-          TOKEN=os.getenv("AIRTABLE_TOKEN"); BASE=os.getenv("AIRTABLE_BASE_ID"); TABLE=os.getenv("AIRTABLE_TABLE_ID")
-          if not (TOKEN and BASE and TABLE): sys.exit("[-] Missing AIRTABLE_* env vars.")
-          H_AUTH={"Authorization":f"Bearer {TOKEN}"}
-          H_JSON={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"}
-          enc_table=urllib.parse.quote(TABLE, safe="")
-          url=f"https://api.airtable.com/v0/{BASE}/{enc_table}?typecast=true"
+          python - <<'PY'
+          import os, sys, csv, json, time, urllib.parse, requests, string
 
-          # Try to learn table field names via meta (optional) or via sample records
-          def learn_fields():
-            # 1) Meta API (if permitted)
-            r=requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables",headers=H_AUTH,timeout=30)
-            if r.status_code==200:
-              data=r.json()
-              for t in data.get("tables",[]):
-                if t.get("id")==TABLE or t.get("name")==TABLE:
-                  return [f["name"] for f in t.get("fields",[])]
-            # 2) Sample records (if any)
-            r=requests.get(f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=3",headers=H_AUTH,timeout=30)
-            if r.status_code==200:
-              js=r.json()
-              for rec in js.get("records",[]):
-                if isinstance(rec.get("fields"),dict) and rec["fields"]:
-                  return list(rec["fields"].keys())
-            return None
+          BASE   = os.getenv("AIRTABLE_BASE_ID")
+          TOKEN  = (os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or "")
+          TABLE  = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
+          if not (BASE and TOKEN and TABLE): sys.exit("Missing AIRTABLE_* envs.")
 
-          fields = learn_fields()
-          print(f"[Uploader] Field discovery -> {fields if fields else 'unknown (no access or empty table)'}")
+          # sanitize token
+          TOKEN = TOKEN.strip().replace("\r","").replace("\n","").replace("\t","")
+          H_AUTH = {"Authorization": f"Bearer {TOKEN}"}
+          H_JSON = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+          enc_table = urllib.parse.quote(TABLE, safe="")
+          url = f"https://api.airtable.com/v0/{BASE}/{enc_table}?typecast=true"
 
-          # Heuristic target names for each CSV column
-          EXPECTED = {
-            "full_name": ["Full Name","Name","Title","Person","Contact","Full name","fullname"],
-            "occupation": ["Occupation","Job","Role","Profession","Title"],
-            "cluster": ["Profession Cluster","Cluster","Category","Group","Segment"],
-            "lang": ["Language","Lang","Locale","Code"],
-          }
+          # discover current fields
+          def discover_fields():
+              r = requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables", headers=H_AUTH, timeout=30)
+              if r.status_code == 200:
+                  for t in r.json().get("tables", []):
+                      if t.get("id") == TABLE or t.get("name") == TABLE:
+                          return [f["name"] for f in t.get("fields", [])]
+              r = requests.get(f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=5", headers=H_AUTH, timeout=30)
+              if r.status_code == 200:
+                  seen=set()
+                  for rec in r.json().get("records", []):
+                      seen.update((rec.get("fields") or {}).keys())
+                  return sorted(seen) if seen else []
+              return []
 
-          def choose_target(col, avail):
-            if not avail: return None
-            cands = EXPECTED[col]
-            # exact (case-insensitive)
-            for cand in cands:
-              for f in avail:
-                if f.lower()==cand.lower(): return f
-            # contains
-            for cand in cands:
-              cl=cand.lower()
-              for f in avail:
-                if cl in f.lower(): return f
-            return None
+          avail = discover_fields()
+          print("[UPLOAD] Available fields:", avail or "(none detected)")
 
-          mapping={}
-          if fields:
-            for col in ["full_name","occupation","cluster","lang"]:
-              tgt=choose_target(col, fields)
-              if tgt: mapping[col]=tgt
-          print(f"[Uploader] CSV->Airtable mapping decided: {mapping if mapping else '(none)'}")
+          # helpers
+          def pick_one(cands):
+              for c in cands:
+                  for f in avail:
+                      if f.lower() == c.lower(): return f
+              for c in cands:
+                  cl=c.lower()
+                  for f in avail:
+                      if cl in f.lower(): return f
+              return None
 
-          # Fallback "notes" field to dump JSON if mapping empty
-          def choose_notes(avail):
-            if not avail: return None
-            guesses_exact=["Notes","Note","Description","Details","Summary","Comments","Comment"]
-            guesses_contains=["notes","description","details","comment","summary"]
-            for g in guesses_exact:
-              for f in avail:
-                if f.lower()==g.lower(): return f
-            for g in guesses_contains:
-              for f in avail:
-                if g in f.lower(): return f
-            return None
+          def pick_all(cands):
+              out, seen=[], set()
+              for c in cands:
+                  for f in avail:
+                      if f.lower()==c.lower() and f not in seen:
+                          out.append(f); seen.add(f)
+              for c in cands:
+                  cl=c.lower()
+                  for f in avail:
+                      if cl in f.lower() and f not in seen:
+                          out.append(f); seen.add(f)
+              return out
 
-          note_field = choose_notes(fields) if fields else None
-          if note_field: print(f"[Uploader] Will use note-like field: {note_field} for raw row JSON when needed.")
+          # choose your actual fields dynamically (covers snake_case + variations)
+          full_name_field  = pick_one(["full_name","Full Name","Name","fullname","Full name","title"])
+          cluster_field    = pick_one(["professional_cluster","profession_cluster","professional cluster","Profession Cluster","cluster","Cluster","category","Category","group","Group"])
+          occupation_field = pick_one(["occupation","professional_canonical","professional_canonoical","profession","job","role","Role"])
+          language_fields  = pick_all(["language","Language","language-origin","Language Origin","lang","Lang"])
 
-          # Build records from CSV
+          print("[UPLOAD] Mapping chosen:", {
+              "full_name": full_name_field,
+              "cluster":   cluster_field,
+              "occupation":occupation_field,
+              "language_targets": language_fields
+          })
+
+          # build records from CSV → only to fields that actually exist
           recs=[]
-          with open("data/candidates_raw.csv",newline="",encoding="utf-8") as f:
-            reader=csv.DictReader(f)
-            for row in reader:
-              payload={}
-              for k,v in row.items():
-                if k in mapping and v not in (None,""):
-                  payload[mapping[k]]=v
-              if not payload and note_field:
-                payload[note_field]=json.dumps(row, ensure_ascii=False)
-              recs.append({"fields":payload})
-
-          if not recs:
-            print("[Uploader] CSV had no rows; nothing to upload."); sys.exit(0)
-
-          # Upload with graceful degradation:
-          # 1) Try mapped payload
-          # 2) If 422, retry that batch with ONLY note_field (JSON dump), if available
-          # 3) If still 422 or no note_field, create empty records (ensures success)
-          def post_batch(batch):
-            r=requests.post(url,headers=H_JSON,data=json.dumps({"records":batch}),timeout=60); return r
+          with open("data/candidates_raw.csv", newline="", encoding="utf-8") as f:
+              reader=csv.DictReader(f)
+              for row in reader:
+                  fields={}
+                  if full_name_field  and row.get("full_name"):  fields[full_name_field]  = row["full_name"]
+                  if cluster_field    and row.get("cluster"):    fields[cluster_field]    = row["cluster"]
+                  if occupation_field and row.get("occupation"): fields[occupation_field] = row["occupation"]
+                  if language_fields  and row.get("lang"):
+                      for lf in language_fields: fields[lf] = row["lang"]
+                  # as a last resort, set a likely primary name so record isn’t empty
+                  if not fields:
+                      nf = pick_one(["Name","Full Name","full_name","Title","title"])
+                      if nf: fields[nf] = row.get("full_name") or "Record"
+                  recs.append({"fields": fields})
 
           total=0
-          for i in range(0,len(recs),10):
-            batch=recs[i:i+10]
-            r=post_batch(batch)
-            if r.status_code==422:
-              print(f"[Uploader] 422 on batch {i//10+1} with mapped fields. Retrying with fallbacks.")
-              if note_field:
-                fb=[{"fields":({note_field: json.dumps({k:v for k,v in b.get('fields',{}).items()}, ensure_ascii=False)})} for b in batch]
-                r=post_batch(fb)
-                if r.status_code>=400:
-                  print(f"[Uploader] Fallback-with-notes failed ({r.status_code}). Last error: {r.text}")
-                  print("[Uploader] Final fallback: creating empty records.")
-                  fb=[{"fields":{}} for _ in batch]
-                  r=post_batch(fb)
-              else:
-                fb=[{"fields":{}} for _ in batch]
-                r=post_batch(fb)
-            if r.status_code>=400:
-              sys.exit(f"[-] Upload failed {r.status_code}: {r.text}")
-            total+=len(batch)
-            print(f"[Uploader] Uploaded batch {i//10+1}: {len(batch)} rows")
-            time.sleep(0.25)
-
-          print(f"[Uploader] Uploaded {total} record(s) to {TABLE} in base {BASE}.")
+          for i in range(0, len(recs), 10):
+              batch = recs[i:i+10]
+              r = requests.post(url, headers=H_JSON, data=json.dumps({"records": batch}), timeout=60)
+              if r.status_code >= 400:
+                  print(r.text); sys.exit(1)
+              total += len(batch)
+              print(f"[UPLOAD] batch {i//10+1}: {len(batch)}")
+              time.sleep(0.25)
+          print(f"[UPLOAD] inserted {total} rows")
           PY
