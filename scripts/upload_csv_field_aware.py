@@ -9,9 +9,10 @@ Uploads data/candidates_raw.csv to Airtable.
 import os, sys, csv, json, time, urllib.parse, requests
 
 def die(msg, code=1):
-    print(msg, file=sys.stderr); sys.exit(code)
+    print(msg, file=sys.stderr)
+    sys.exit(code)
 
-def sanitize_token(tok: str) -> str:
+def sanitize_token(tok):
     return tok.strip().replace("\r","").replace("\n","").replace("\t","")
 
 def discover_schema(base_id, table_id_or_name, headers):
@@ -26,7 +27,8 @@ def discover_schema(base_id, table_id_or_name, headers):
         for t in data.get("tables", []):
             if t.get("id") == table_id_or_name or t.get("name") == table_id_or_name:
                 for f in t.get("fields", []):
-                    fields.append(f["name"]); defs[f["name"]] = f
+                    fields.append(f["name"])
+                    defs[f["name"]] = f
                 return fields, defs
     # Fallback: union of field keys seen in a few records
     r = requests.get(f"https://api.airtable.com/v0/{base_id}/{enc_table}?maxRecords=5",
@@ -38,51 +40,54 @@ def discover_schema(base_id, table_id_or_name, headers):
     return sorted(seen), {}
 
 def pick_one(avail, candidates):
+    # exact (case-insensitive), then "contains"
+    al = [a.lower() for a in avail]
     for c in candidates:
-        for f in avail:
-            if f.lower() == c.lower(): return f
+        if c.lower() in al:
+            return avail[al.index(c.lower())]
     for c in candidates:
-        cl = c.lower()
-        for f in avail:
-            if cl in f.lower(): return f
+        c_l = c.lower()
+        for a in avail:
+            if c_l in a.lower():
+                return a
     return None
 
 def pick_all(avail, candidates):
-    out, seen = [], set()
+    out, used = [], set()
     for c in candidates:
-        for f in avail:
-            if f.lower() == c.lower() and f not in seen:
-                out.append(f); seen.add(f)
+        for a in avail:
+            if a.lower() == c.lower() and a not in used:
+                out.append(a); used.add(a)
     for c in candidates:
-        cl = c.lower()
-        for f in avail:
-            if cl in f.lower() and f not in seen:
-                out.append(f); seen.add(f)
+        c_l = c.lower()
+        for a in avail:
+            if c_l in a.lower() and a not in used:
+                out.append(a); used.add(a)
     return out
 
 def normalize_select(value, allowed):
-    if not value or not allowed: return None
+    if not value or not allowed:
+        return None
     for opt in allowed:
         if value.lower() == opt.lower():
             return opt
     return None
 
 def main():
-    BASE   = os.getenv("AIRTABLE_BASE_ID")
-    TOKEN  = (os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or "")
-    TABLE  = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
-    if not (BASE and TOKEN and TABLE):
+    base  = os.getenv("AIRTABLE_BASE_ID")
+    token = os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or ""
+    table = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
+    if not (base and token and table):
         die("Missing AIRTABLE_* envs (need BASE_ID, TOKEN/API_KEY, and TABLE_ID or TABLE_NAME).")
 
-    TOKEN = sanitize_token(TOKEN)
-    H_AUTH = {"Authorization": f"Bearer {TOKEN}"}
-    H_JSON = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-
-    enc_table = urllib.parse.quote(TABLE, safe="")
-    base_url  = f"https://api.airtable.com/v0/{BASE}/{enc_table}"  # no typecast=true
+    token = sanitize_token(token)
+    H_AUTH = {"Authorization": f"Bearer {token}"}
+    H_JSON = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    enc_table = urllib.parse.quote(table, safe="")
+    base_url  = f"https://api.airtable.com/v0/{base}/{enc_table}"  # no typecast=true
 
     # 1) Discover fields & schema
-    avail, defs = discover_schema(BASE, TABLE, H_AUTH)
+    avail, defs = discover_schema(base, table, H_AUTH)
     print("[UPLOAD] Available fields:", avail or "(none)")
 
     # 2) Map CSV -> your real columns
@@ -117,22 +122,30 @@ def main():
         reader = csv.DictReader(f)
         for row in reader:
             fields = {}
-            if full_name_field  and row.get("full_name"):  fields[full_name_field]  = row["full_name"]
-            if occupation_field and row.get("occupation"): fields[occupation_field] = row["occupation"]
-            if cluster_field and row.get("cluster"):
-                if allowed_cluster is None:
-                    pass  # no schema → skip to avoid INVALID_MULTIPLE_CHOICE_OPTIONS
-                else:
-                    norm = normalize_select(row["cluster"], allowed_cluster)
+            fn   = (row.get("full_name") or "").strip()
+            occ  = (row.get("occupation") or "").strip()
+            clu  = (row.get("cluster") or "").strip()
+            lang = (row.get("lang") or "").strip()
+
+            if full_name_field and fn:
+                fields[full_name_field] = fn
+            if occupation_field and occ:
+                fields[occupation_field] = occ
+            if cluster_field and clu:
+                if allowed_cluster is not None:
+                    norm = normalize_select(clu, allowed_cluster)
                     if norm is not None:
                         fields[cluster_field] = norm
                     else:
-                        print(f"[UPLOAD] Skipping cluster '{row['cluster']}' (not in allowed options).")
-            if language_fields and row.get("lang"):
+                        print(f"[UPLOAD] Skipping cluster '{clu}' (not in allowed options).")
+                # else: conservative skip to avoid INVALID_MULTIPLE_CHOICE_OPTIONS
+            if language_fields and lang:
                 for lf in language_fields:
-                    fields[lf] = row["lang"]
+                    fields[lf] = lang
+
             if not fields and full_name_field:
-                fields[full_name_field] = row.get("full_name") or "Record"
+                fields[full_name_field] = fn or "Record"
+
             records.append({"fields": fields})
 
     # 4) Upload in batches of 10
@@ -141,4 +154,12 @@ def main():
         batch = records[i:i+10]
         r = requests.post(base_url, headers=H_JSON, data=json.dumps({"records": batch}), timeout=60)
         if r.status_code >= 400:
-            die(
+            die(f"[ERROR] Upload failed {r.status_code}: {r.text}")
+        created += len(batch)
+        print(f"[UPLOAD] batch {i//10+1}: {len(batch)}")
+        time.sleep(0.25)
+
+    print(f"[UPLOAD] inserted {created} rows")
+
+if __name__ == "__main__":
+    main()
