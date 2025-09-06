@@ -5,11 +5,11 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-      AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}     # optional fallback
-      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}   # optional (we'll use NAME if not set)
-      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}     # your PAT (single line)
+      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}   # optional fallback
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}  # optional (we’ll use NAME if not set)
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}# you set this one
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,7 +17,7 @@ jobs:
       - name: Install requests
         run: python -m pip install --upgrade pip && python -m pip install requests
 
-      - name: Insert one test record into your table
+      - name: Insert one test record (auto-detect table fields)
         run: |
           python - << 'PY'
           import os, sys, time, json, urllib.parse, requests, string
@@ -25,48 +25,75 @@ jobs:
           BASE   = os.getenv("AIRTABLE_BASE_ID")
           TOKEN  = (os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or "")
           TABLE  = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
+          if not (BASE and TOKEN and TABLE):
+              sys.exit("Missing AIRTABLE_* envs (need BASE_ID, TOKEN or API_KEY, and TABLE_ID or TABLE_NAME).")
 
-          # 1) Basic presence checks
-          if not BASE:  sys.exit("Missing AIRTABLE_BASE_ID.")
-          if not TABLE: sys.exit("Set AIRTABLE_TABLE_ID or AIRTABLE_TABLE_NAME.")
-          if not TOKEN: sys.exit("Missing token: set AIRTABLE_TOKEN (or AIRTABLE_API_KEY).")
-
-          # 2) Sanitize token (remove hidden whitespace/newlines)
+          # Sanitize token
           raw = TOKEN
           TOKEN = TOKEN.strip().replace("\r","").replace("\n","").replace("\t","")
-          if TOKEN != raw:
-              print("[WARN] Token contained whitespace/newlines; sanitized at runtime.")
-          # Disallow any non-printable chars just in case
           if any(ch not in string.printable for ch in TOKEN):
-              sys.exit("AIRTABLE token has non-printable characters. Edit the secret and paste a clean one-line token.")
+              sys.exit("AIRTABLE token contains non-printable characters. Paste a clean one-line token.")
+          if TOKEN != raw:
+              print("[WARN] Token had whitespace/newlines; sanitized at runtime.")
 
-          H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+          H_AUTH = {"Authorization": f"Bearer {TOKEN}"}
+          H_JSON = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
           enc_table = urllib.parse.quote(TABLE, safe="")
-          url = f"https://api.airtable.com/v0/{BASE}/{enc_table}?typecast=true"
+          create_url = f"https://api.airtable.com/v0/{BASE}/{enc_table}?typecast=true"
 
-          ts = time.strftime("%Y-%m-%d %H:%M:%S")
-          fields = {
-              "full_name": f"SMOKE TEST {ts}",
-              "professional_cluster": "Smoke",
-              # try all likely occupation columns; whichever exists will keep it
-              "occupation": "Tester",
-              "professional_canonical": "Tester",
-              "professional_canonoical": "Tester",
-              "language": "en",
-              "language-origin": "en",
-          }
+          # --- Discover actual field names in the target table ---
+          def discover_fields():
+              # Prefer schema API (needs schema.bases:read). If forbidden, peek at existing records.
+              r = requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables", headers=H_AUTH, timeout=30)
+              if r.status_code == 200:
+                  data = r.json()
+                  for t in data.get("tables", []):
+                      if t.get("id") == TABLE or t.get("name") == TABLE:
+                          return [f["name"] for f in t.get("fields", [])]
+              # fallback: union keys appearing in up to 5 records
+              r = requests.get(f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=5", headers=H_AUTH, timeout=30)
+              if r.status_code == 200:
+                  seen = set()
+                  for rec in r.json().get("records", []):
+                      for k in (rec.get("fields") or {}).keys():
+                          seen.add(k)
+                  if seen:
+                      return sorted(seen)
+              return []
 
-          payload = {"records": [{"fields": fields}]}
-          try:
-              r = requests.post(url, headers=H, data=json.dumps(payload), timeout=60)
-          except Exception as e:
-              sys.exit(f"Network/requests error: {e}")
+          avail = discover_fields()
+          print("[SMOKE] Available fields:", avail or "(none detected)")
 
-          print("[SMOKE] POST", url, "->", r.status_code)
-          if r.status_code >= 400:
-              print(r.text)
-              sys.exit(1)
+          # Helpers to choose field names that actually exist
+          def pick_one(candidates):
+              for cand in candidates:
+                  for f in avail:
+                      if f.lower() == cand.lower():
+                          return f
+              for cand in candidates:
+                  cl = cand.lower()
+                  for f in avail:
+                      if cl in f.lower():
+                          return f
+              return None
 
-          rec_id = (r.json().get("records") or [{}])[0].get("id")
-          print(f"[SMOKE] Inserted record id: {rec_id}")
-          PY
+          def pick_all(candidates):
+              out, seen = [], set()
+              for cand in candidates:
+                  for f in avail:
+                      if f.lower() == cand.lower() and f not in seen:
+                          out.append(f); seen.add(f)
+              for cand in candidates:
+                  cl = cand.lower()
+                  for f in avail:
+                      if cl in f.lower() and f not in seen:
+                          out.append(f); seen.add(f)
+              return out
+
+          # Candidate labels we’ll try to match to YOUR columns
+          full_name_field  = pick_one(["full_name","Full Name","Name","Full name","fullname","title"])
+          cluster_field    = pick_one(["professional_cluster","profession_cluster","professional cluster","Profession Cluster","cluster","Cluster","category","Category","group","Group"])
+          occupation_field = pick_one(["occupation","professional_canonical","professional_canonoical","profession","job","role","Role"])
+          language_fields  = pick_all(["language","Language","language-origin","Language Origin","lang","Lang"])
+
+          pri
