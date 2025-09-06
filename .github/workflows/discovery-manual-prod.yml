@@ -10,7 +10,7 @@ on:
       limit:
         description: "Per-occupation result limit"
         required: true
-        default: "30"
+        default: "5"
       langs:
         description: "Comma-separated language codes (e.g., en)"
         required: true
@@ -40,6 +40,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install requests tenacity pandas python-dotenv; fi
+
+      - name: Show masked secrets presence
+        run: |
+          echo "AIRTABLE_TOKEN set? $([[ -n \"$AIRTABLE_TOKEN\" ]] && echo YES || echo NO)"
+          echo "AIRTABLE_BASE_ID: ${AIRTABLE_BASE_ID}"
+          echo "AIRTABLE_TABLE_ID: ${AIRTABLE_TABLE_ID}"
+
+      - name: Airtable healthcheck (token/base/table)
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
+        run: |
+          python scripts/airtable_healthcheck.py \
+            --base "$AIRTABLE_BASE_ID" \
+            --table "$AIRTABLE_TABLE_ID"
 
       - name: Ensure data dir
         run: mkdir -p data
