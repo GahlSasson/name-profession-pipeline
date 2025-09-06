@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}
-      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}      # optional fallback
+      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}
       AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
-      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}     # optional
-      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}   # you have this set
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,8 +37,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests
 
-      # ---------- CSV generator (leave as-is or swap for your real discovery) ----------
-      - name: Generate CSV (mock data for pipeline test)
+      # Generate a tiny CSV (replace this with your real discovery later)
+      - name: Generate CSV (mock)
         env:
           CLUSTERS: ${{ github.event.inputs.clusters }}
           LIMIT:    ${{ github.event.inputs.limit }}
@@ -50,7 +50,6 @@ jobs:
           try: limit=int(os.getenv("LIMIT","5"))
           except: limit=5
           langs=[l.strip() for l in os.getenv("LANGS","en").split(",") if l.strip()]
-
           rows=[
             {"full_name":"Ada Lovelace","occupation":"Mathematician","cluster":"Science","lang":"en"},
             {"full_name":"Nikola Tesla","occupation":"Engineer","cluster":"Trades","lang":"en"},
@@ -59,7 +58,6 @@ jobs:
           rows=[r for r in rows if (not clusters or r["cluster"] in clusters) and (not langs or r["lang"] in langs)]
           if not rows:
             rows=[{"full_name":"Test Person","occupation":"Tester","cluster":(clusters[0] if clusters else "Trades"),"lang":(langs[0] if langs else "en")}]
-
           p=pathlib.Path("data"); p.mkdir(parents=True, exist_ok=True)
           with open("data/candidates_raw.csv","w",newline="",encoding="utf-8") as f:
             w=csv.DictWriter(f,fieldnames=["full_name","occupation","cluster","lang"])
@@ -72,6 +70,6 @@ jobs:
           echo "linecount:"; wc -l data/candidates_raw.csv
           echo "preview:"; head -n 5 data/candidates_raw.csv
 
-      # ---------- Upload via Python script (no heredoc issues) ----------
+      # Call the Python script (no heredoc, no indentation issues)
       - name: Upload CSV (field-aware; respects single-select options)
         run: python scripts/upload_csv_field_aware.py
