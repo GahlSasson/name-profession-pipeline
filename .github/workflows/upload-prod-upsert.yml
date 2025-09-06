@@ -1,0 +1,154 @@
+name: Upload CSV to Airtable (UPSERT)
+on: { workflow_dispatch: {} }
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}     # optional
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install deps
+        run: python -m pip install --upgrade pip && python -m pip install requests
+
+      - name: Verify CSV present
+        run: |
+          test -f data/candidates_raw.csv || (echo "data/candidates_raw.csv is missing. Commit your real CSV first." && exit 1)
+          echo "CSV linecount:"; wc -l data/candidates_raw.csv
+          echo "CSV preview:"; head -n 5 data/candidates_raw.csv
+
+      - name: Upload with UPSERT (field-aware; respects single-select options)
+        run: |
+          python - <<'PY'
+          import os, sys, csv, json, time, urllib.parse, requests
+
+          BASE   = os.getenv("AIRTABLE_BASE_ID")
+          TOKEN  = os.getenv("AIRTABLE_TOKEN") or ""
+          TABLE  = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
+          if not (BASE and TOKEN and TABLE): sys.exit("Missing AIRTABLE_* envs.")
+
+          TOKEN = TOKEN.strip().replace("\r","").replace("\n","").replace("\t","")
+          H_AUTH = {"Authorization": f"Bearer {TOKEN}"}
+          H_JSON = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+          enc_table = urllib.parse.quote(TABLE, safe="")
+          base_url  = f"https://api.airtable.com/v0/{BASE}/{enc_table}"
+
+          # discover schema
+          def discover_schema():
+              r = requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables", headers=H_AUTH, timeout=30)
+              fields, defs = [], {}
+              if r.status_code == 200:
+                  for t in r.json().get("tables", []):
+                      if t.get("id") == TABLE or t.get("name") == TABLE:
+                          for f in t.get("fields", []):
+                              fields.append(f["name"])
+                              defs[f["name"]] = f
+                          return fields, defs
+              # fallback
+              r = requests.get(base_url, headers=H_AUTH, params={"maxRecords":5}, timeout=30)
+              seen=set()
+              if r.status_code == 200:
+                  for rec in r.json().get("records", []):
+                      seen.update((rec.get("fields") or {}).keys())
+              return sorted(seen), {}
+
+          avail, defs = discover_schema()
+          print("[UPLOAD] Available fields:", avail or "(none)")
+
+          def pick_one(cands):
+              for c in cands:
+                  for f in avail:
+                      if f.lower()==c.lower(): return f
+              for c in cands:
+                  cl=c.lower()
+                  for f in avail:
+                      if cl in f.lower(): return f
+              return None
+
+          def pick_all(cands):
+              out, seen=[], set()
+              for c in cands:
+                  for f in avail:
+                      if f.lower()==c.lower() and f not in seen: out.append(f); seen.add(f)
+              for c in cands:
+                  cl=c.lower()
+                  for f in avail:
+                      if cl in f.lower() and f not in seen: out.append(f); seen.add(f)
+              return out
+
+          full_name_f  = pick_one(["full_name","Full Name","Name","fullname","Full name","title"])
+          cluster_f    = pick_one(["profession_cluster","professional_cluster","Profession Cluster","cluster","Cluster","category","Category"])
+          occupation_f = pick_one(["occupation","profession_canonical","professional_canonical","professional_canonoical","job","role","Role"])
+          lang_fs      = pick_all(["language","Language","language_origin","language-origin","Language Origin","lang","Lang"])
+
+          # allowed options for select cluster
+          allowed_cluster = None
+          if cluster_f and cluster_f in defs and defs[cluster_f].get("type") in ("singleSelect","multipleSelects"):
+              choices = (defs[cluster_f].get("options") or {}).get("choices") or []
+              allowed_cluster = [c.get("name") for c in choices if "name" in c]
+              print(f"[UPLOAD] {cluster_f} allowed options:", allowed_cluster)
+
+          def normalize_select(value, allowed):
+              if not value or not allowed: return None
+              for opt in allowed:
+                  if value.lower()==opt.lower(): return opt
+              return None
+
+          # find existing by (full_name, occupation)
+          def find_existing(fn, occ):
+              if not (full_name_f and occupation_f): return None
+              def esc(s): return s.replace('"','\\"')
+              formula = f'AND({{{full_name_f}}} = "{esc(fn)}", {{{occupation_f}}} = "{esc(occ)}")'
+              r = requests.get(base_url, headers=H_AUTH, params={"filterByFormula": formula, "maxRecords": 1}, timeout=30)
+              if r.status_code != 200: return None
+              recs = r.json().get("records") or []
+              return recs[0] if recs else None
+
+          def create_record(fields):
+              return requests.post(base_url, headers=H_JSON, data=json.dumps({"records":[{"fields":fields}]}), timeout=60)
+
+          def update_record(rec_id, fields):
+              return requests.patch(f"{base_url}/{rec_id}", headers=H_JSON, data=json.dumps({"fields":fields}), timeout=60)
+
+          created, updated = 0, 0
+          with open("data/candidates_raw.csv", newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              for row in reader:
+                  fn   = (row.get("full_name") or "").strip()
+                  occv = (row.get("occupation") or "").strip()
+                  clus = (row.get("cluster") or "").strip()
+                  lang = (row.get("lang") or "").strip()
+
+                  fields={}
+                  if full_name_f and fn:  fields[full_name_f] = fn
+                  if occupation_f and occv: fields[occupation_f] = occv
+                  if cluster_f and clus:
+                      if allowed_cluster is not None:
+                          norm = normalize_select(clus, allowed_cluster)
+                          if norm is not None: fields[cluster_f] = norm
+                          else: print(f"[UPLOAD] Skipping cluster '{clus}' (not in allowed options).")
+                  if lang_fs and lang:
+                      for lf in lang_fs: fields[lf] = lang
+                  if not fields and full_name_f:
+                      fields[full_name_f] = fn or "Record"
+
+                  existing = find_existing(fn, occv)
+                  if existing:
+                      r = update_record(existing["id"], fields)
+                      if r.status_code >= 400:
+                          print("[ERROR] Update failed:", r.text); sys.exit(1)
+                      updated += 1
+                  else:
+                      r = create_record(fields)
+                      if r.status_code >= 400:
+                          print("[ERROR] Create failed:", r.text); sys.exit(1)
+                      created += 1
+                  time.sleep(0.2)
+
+          print(f"[UPLOAD] Done. created={created}, updated={updated}")
+          PY
