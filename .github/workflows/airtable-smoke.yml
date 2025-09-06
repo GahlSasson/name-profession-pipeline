@@ -6,9 +6,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-      AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}     # optional fallback
       AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
+      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}   # optional (we'll use NAME if not set)
       AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
     steps:
       - uses: actions/checkout@v4
@@ -20,16 +20,25 @@ jobs:
       - name: Insert one test record into your table
         run: |
           python - << 'PY'
-          import os, sys, time, json, urllib.parse, requests
+          import os, sys, time, json, urllib.parse, requests, string
 
-          BASE  = os.getenv("AIRTABLE_BASE_ID")
-          TOKEN = os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY")
-          # Accept either a table ID or a table NAME:
-          TABLE = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
+          BASE   = os.getenv("AIRTABLE_BASE_ID")
+          TOKEN  = (os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or "")
+          TABLE  = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
 
-          if not TOKEN: sys.exit("Missing token: set AIRTABLE_TOKEN or AIRTABLE_API_KEY.")
+          # 1) Basic presence checks
           if not BASE:  sys.exit("Missing AIRTABLE_BASE_ID.")
           if not TABLE: sys.exit("Set AIRTABLE_TABLE_ID or AIRTABLE_TABLE_NAME.")
+          if not TOKEN: sys.exit("Missing token: set AIRTABLE_TOKEN (or AIRTABLE_API_KEY).")
+
+          # 2) Sanitize token (remove hidden whitespace/newlines)
+          raw = TOKEN
+          TOKEN = TOKEN.strip().replace("\r","").replace("\n","").replace("\t","")
+          if TOKEN != raw:
+              print("[WARN] Token contained whitespace/newlines; sanitized at runtime.")
+          # Disallow any non-printable chars just in case
+          if any(ch not in string.printable for ch in TOKEN):
+              sys.exit("AIRTABLE token has non-printable characters. Edit the secret and paste a clean one-line token.")
 
           H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
           enc_table = urllib.parse.quote(TABLE, safe="")
@@ -39,7 +48,7 @@ jobs:
           fields = {
               "full_name": f"SMOKE TEST {ts}",
               "professional_cluster": "Smoke",
-              # Try all common occupation columns you mentioned (whichever exists will accept it)
+              # try all likely occupation columns; whichever exists will keep it
               "occupation": "Tester",
               "professional_canonical": "Tester",
               "professional_canonoical": "Tester",
@@ -48,10 +57,16 @@ jobs:
           }
 
           payload = {"records": [{"fields": fields}]}
-          r = requests.post(url, headers=H, data=json.dumps(payload), timeout=60)
+          try:
+              r = requests.post(url, headers=H, data=json.dumps(payload), timeout=60)
+          except Exception as e:
+              sys.exit(f"Network/requests error: {e}")
+
           print("[SMOKE] POST", url, "->", r.status_code)
           if r.status_code >= 400:
-              print(r.text); sys.exit(1)
+              print(r.text)
+              sys.exit(1)
+
           rec_id = (r.json().get("records") or [{}])[0].get("id")
           print(f"[SMOKE] Inserted record id: {rec_id}")
           PY
