@@ -1,0 +1,83 @@
+name: Discovery (Manual — PROD)
+
+on:
+  workflow_dispatch:
+    inputs:
+      clusters:
+        description: "Comma-separated clusters (e.g., Trades,Arts,Law,Agriculture,Medicine)"
+        required: true
+        default: "Trades"
+      limit:
+        description: "Per-occupation result limit"
+        required: true
+        default: "30"
+      langs:
+        description: "Comma-separated language codes (e.g., en)"
+        required: true
+        default: "en"
+      surname_filter:
+        description: "(Optional) Comma-separated surnames to filter (or leave blank)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }} # or use TABLE_NAME
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests pandas tenacity python-dotenv
+
+      - name: Ensure data dir
+        run: mkdir -p data
+
+      - name: Preflight — show query template
+        run: |
+          echo "Verifying query template has placeholders..."
+          grep -E "{LANGS}|{LIMIT}|{OCCUPATION_FILTER}|{SURNAME_FILTER}" queries/query_template.sparql
+
+      - name: Run discovery to produce CSV
+        env:
+          CLUSTERS: ${{ github.event.inputs.clusters }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          LANGS: ${{ github.event.inputs.langs }}
+          SURNAME_FILTER: ${{ github.event.inputs.surname_filter }}
+        run: |
+          python scripts/run_discovery.py \
+            --clusters "$CLUSTERS" \
+            --limit "$LIMIT" \
+            --langs "$LANGS" \
+            --surname-filter "$SURNAME_FILTER" \
+            --out "data/candidates_raw.csv"
+
+      - name: Fail if no CSV
+        run: |
+          echo "Data dir contents:"
+          ls -lah data || true
+          test -f data/candidates_raw.csv || (echo "No CSV produced." && exit 1)
+
+      - name: Show sample
+        run: |
+          echo "CSV line count:"; wc -l data/candidates_raw.csv
+          echo "First 5 lines:"; head -n 5 data/candidates_raw.csv
+
+      - name: Upload to Airtable
+        run: |
+          python scripts/upload_to_airtable.py \
+            --csv data/candidates_raw.csv \
+            --base $AIRTABLE_BASE_ID \
+            --table $AIRTABLE_TABLE_ID
