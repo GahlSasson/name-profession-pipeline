@@ -18,7 +18,7 @@ jobs:
 
       - name: Verify CSV present
         run: |
-          test -f data/candidates_raw.csv || (echo "data/candidates_raw.csv is missing. Commit your real CSV first." && exit 1)
+          test -f data/candidates_raw.csv || (echo "data/candidates_raw.csv is missing. Commit or generate it first." && exit 1)
           echo "CSV linecount:"; wc -l data/candidates_raw.csv
           echo "CSV preview:"; head -n 5 data/candidates_raw.csv
 
@@ -49,7 +49,6 @@ jobs:
                               fields.append(f["name"])
                               defs[f["name"]] = f
                           return fields, defs
-              # fallback
               r = requests.get(base_url, headers=H_AUTH, params={"maxRecords":5}, timeout=30)
               seen=set()
               if r.status_code == 200:
@@ -86,7 +85,6 @@ jobs:
           occupation_f = pick_one(["occupation","profession_canonical","professional_canonical","professional_canonoical","job","role","Role"])
           lang_fs      = pick_all(["language","Language","language_origin","language-origin","Language Origin","lang","Lang"])
 
-          # allowed options for select cluster
           allowed_cluster = None
           if cluster_f and cluster_f in defs and defs[cluster_f].get("type") in ("singleSelect","multipleSelects"):
               choices = (defs[cluster_f].get("options") or {}).get("choices") or []
@@ -127,11 +125,10 @@ jobs:
                   fields={}
                   if full_name_f and fn:  fields[full_name_f] = fn
                   if occupation_f and occv: fields[occupation_f] = occv
-                  if cluster_f and clus:
-                      if allowed_cluster is not None:
-                          norm = normalize_select(clus, allowed_cluster)
-                          if norm is not None: fields[cluster_f] = norm
-                          else: print(f"[UPLOAD] Skipping cluster '{clus}' (not in allowed options).")
+                  if cluster_f and clus and allowed_cluster is not None:
+                      norm = normalize_select(clus, allowed_cluster)
+                      if norm is not None: fields[cluster_f] = norm
+                      else: print(f"[UPLOAD] Skipping cluster '{clus}' (not in allowed options).")
                   if lang_fs and lang:
                       for lf in lang_fs: fields[lf] = lang
                   if not fields and full_name_f:
