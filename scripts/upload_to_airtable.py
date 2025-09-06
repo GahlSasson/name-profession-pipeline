@@ -58,7 +58,7 @@ def main():
         for row in reader:
             fields = {}
             for csv_col, value in row.items():
-                if csv_col in field_map and value:
+                if csv_col in field_map and value is not None and value != "":
                     fields[field_map[csv_col]] = value
             if fields:
                 records.append({"fields": fields})
