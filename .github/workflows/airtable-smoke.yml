@@ -5,11 +5,11 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}      # your PAT (one line)
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}      # PAT
       AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}    # optional fallback
       AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
       AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}   # optional; we’ll use NAME if not set
-      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }} # you have this set
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }} # you have this
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,7 +28,7 @@ jobs:
           if not (BASE and TOKEN and TABLE):
               sys.exit("Missing AIRTABLE_* envs (need BASE_ID, TOKEN/API_KEY, and TABLE_ID or TABLE_NAME).")
 
-          # Sanitize token to avoid "Invalid header value" errors
+          # Sanitize token
           raw = TOKEN
           TOKEN = TOKEN.strip().replace("\r","").replace("\n","").replace("\t","")
           if any(ch not in string.printable for ch in TOKEN):
@@ -43,8 +43,6 @@ jobs:
           ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
           # Try a few payloads in order:
-          # 1) empty fields (often allowed)
-          # 2) common primary field names in case your table requires one
           candidates = [
               {},  # empty record
               {"Name": f"SMOKE TEST {ts}"},
@@ -68,6 +66,5 @@ jobs:
                   break
               last_err = r.text
           else:
-              print(last_err)
-              sys.exit(1)
+              print(last_err); sys.exit(1)
           PY
