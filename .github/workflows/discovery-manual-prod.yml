@@ -20,22 +20,19 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      # Your repo secrets (you already set these names)
-      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}        # PAT
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}
       AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}      # optional fallback
-      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}      # apprubc2DbwI5i9c1
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
       AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}     # optional
-      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}   # using table NAME is fine
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}   # you have this
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
-
       - name: Install deps
         run: python -m pip install --upgrade pip && python -m pip install requests
 
-      # ---------- CSV generator (swap this block with your real discovery later) ----------
+      # ---------- CSV generator (swap with your real discovery later) ----------
       - name: Generate CSV (mock data for pipeline test)
         env:
           CLUSTERS: ${{ github.event.inputs.clusters }}
@@ -153,7 +150,7 @@ jobs:
               if not value or not allowed: return None
               for opt in allowed:
                   if value.lower() == opt.lower():
-                      return opt  # return canonical casing
+                      return opt  # canonical casing
               return None  # not allowed → skip
 
           # build records from CSV
