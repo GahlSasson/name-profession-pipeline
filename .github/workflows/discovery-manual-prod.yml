@@ -1,3 +1,76 @@
+name: Discovery Manual PROD
+
+on:
+  workflow_dispatch:
+    inputs:
+      clusters:
+        description: "Comma-separated clusters (e.g., Trades,Arts,Science)"
+        required: true
+        default: "Trades"
+      limit:
+        description: "Per-occupation result limit"
+        required: true
+        default: "5"
+      langs:
+        description: "Comma-separated language codes (e.g., en,it)"
+        required: true
+        default: "en"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      # Your repo secrets (you already set these names)
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}        # PAT
+      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}      # optional fallback
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}      # apprubc2DbwI5i9c1
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}     # optional
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}   # using table NAME is fine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Install deps
+        run: python -m pip install --upgrade pip && python -m pip install requests
+
+      # ---------- CSV generator (swap this block with your real discovery later) ----------
+      - name: Generate CSV (mock data for pipeline test)
+        env:
+          CLUSTERS: ${{ github.event.inputs.clusters }}
+          LIMIT:    ${{ github.event.inputs.limit }}
+          LANGS:    ${{ github.event.inputs.langs }}
+        run: |
+          python - <<'PY'
+          import os, csv, pathlib
+          clusters=[c.strip() for c in os.getenv("CLUSTERS","").split(",") if c.strip()]
+          try: limit=int(os.getenv("LIMIT","5"))
+          except: limit=5
+          langs=[l.strip() for l in os.getenv("LANGS","en").split(",") if l.strip()]
+
+          rows=[
+            {"full_name":"Ada Lovelace","occupation":"Mathematician","cluster":"Science","lang":"en"},
+            {"full_name":"Nikola Tesla","occupation":"Engineer","cluster":"Trades","lang":"en"},
+            {"full_name":"Leonardo da Vinci","occupation":"Artist","cluster":"Arts","lang":"it"},
+          ]
+          rows=[r for r in rows if (not clusters or r["cluster"] in clusters) and (not langs or r["lang"] in langs)]
+          if not rows:
+            rows=[{"full_name":"Test Person","occupation":"Tester","cluster":(clusters[0] if clusters else "Trades"),"lang":(langs[0] if langs else "en")}]
+
+          p=pathlib.Path("data"); p.mkdir(parents=True, exist_ok=True)
+          with open("data/candidates_raw.csv","w",newline="",encoding="utf-8") as f:
+            w=csv.DictWriter(f,fieldnames=["full_name","occupation","cluster","lang"])
+            w.writeheader(); w.writerows(rows)
+          print("[CSV] wrote", len(rows), "rows -> data/candidates_raw.csv")
+          PY
+
+      - name: Show CSV
+        run: |
+          echo "linecount:"; wc -l data/candidates_raw.csv
+          echo "preview:"; head -n 5 data/candidates_raw.csv
+
+      # ---------- Upload step (field-aware; respects single-select options) ----------
       - name: Upload CSV (field-aware; respects single-select options)
         run: |
           python - <<'PY'
@@ -15,7 +88,7 @@
           enc_table = urllib.parse.quote(TABLE, safe="")
           url = f"https://api.airtable.com/v0/{BASE}/{enc_table}"   # NOTE: no ?typecast=true
 
-          # --- discover fields + options (type, choices) ---
+          # --- discover fields + schema (types/choices if available) ---
           def discover_schema():
               r = requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables", headers=H_AUTH, timeout=30)
               fields, defs = [], {}
@@ -26,17 +99,18 @@
                               fields.append(f["name"])
                               defs[f["name"]] = f
                           return fields, defs
-              # fallback: just list fields seen in existing records
+              # fallback: list keys seen in records
               r = requests.get(f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=5", headers=H_AUTH, timeout=30)
-              seen, defs = set(), {}
+              seen=set()
               if r.status_code == 200:
                   for rec in r.json().get("records", []):
                       seen.update((rec.get("fields") or {}).keys())
-              return sorted(seen), defs
+              return sorted(seen), {}
 
           avail, defs = discover_schema()
           print("[UPLOAD] Available fields:", avail or "(none)")
-          # helper to pick fields by common aliases
+
+          # helpers to pick existing fields
           def pick_one(cands):
               for c in cands:
                   for f in avail:
@@ -57,12 +131,16 @@
                       if cl in f.lower() and f not in seen: out.append(f); seen.add(f)
               return out
 
+          # choose your actual fields dynamically (covers snake_case + variants)
           full_name_field  = pick_one(["full_name","Full Name","Name","fullname","Full name","title"])
+          # cluster can be 'profession_cluster' or 'professional_cluster'
           cluster_field    = pick_one(["profession_cluster","professional_cluster","Profession Cluster","cluster","Cluster","category","Category"])
+          # occupation can be 'occupation', 'profession_canonical' or 'professional_canonical' (and misspelling)
           occupation_field = pick_one(["occupation","profession_canonical","professional_canonical","professional_canonoical","job","role","Role"])
-          language_fields  = pick_all(["language","Language","language-origin","Language Origin","lang","Lang"])
+          # language fields: include underscore + hyphen variants
+          language_fields  = pick_all(["language","Language","language_origin","language-origin","Language Origin","lang","Lang"])
 
-          # read allowed options for single-select cluster (if schema available)
+          # read allowed options for single/multi-select cluster (if schema available)
           allowed_cluster = None
           if cluster_field and cluster_field in defs:
               fdef = defs[cluster_field]
@@ -84,12 +162,12 @@
               reader=csv.DictReader(f)
               for row in reader:
                   fields={}
-                  if full_name_field and row.get("full_name"):  fields[full_name_field]=row["full_name"]
+                  if full_name_field  and row.get("full_name"):  fields[full_name_field]=row["full_name"]
                   if occupation_field and row.get("occupation"): fields[occupation_field]=row["occupation"]
-                  # cluster: only set if value is in allowed options
+                  # cluster: only set if value is allowed (skip otherwise to avoid 422)
                   if cluster_field and row.get("cluster"):
                       if allowed_cluster is None:
-                          # schema not available → be conservative and skip to avoid 422
+                          # schema not available → conservative: skip to avoid INVALID_MULTIPLE_CHOICE_OPTIONS
                           pass
                       else:
                           norm = normalize_select(row["cluster"], allowed_cluster)
@@ -99,7 +177,7 @@
                               print(f"[UPLOAD] Skipping cluster '{row['cluster']}' (not in allowed options).")
                   if language_fields and row.get("lang"):
                       for lf in language_fields: fields[lf]=row["lang"]
-                  # last resort: if fields empty, set a likely primary
+                  # last resort: ensure something is set so record isn't empty
                   if not fields:
                       nf = pick_one(["Name","Full Name","full_name","Title","title"])
                       if nf: fields[nf] = row.get("full_name") or "Record"
@@ -109,7 +187,7 @@
           total=0
           for i in range(0, len(recs), 10):
               batch=recs[i:i+10]
-              r=requests.post(url, headers=H_JSON, data=json.dumps({"records": batch}), timeout=60)
+              r = requests.post(url, headers=H_JSON, data=json.dumps({"records": batch}), timeout=60)
               if r.status_code >= 400:
                   print(r.text); sys.exit(1)
               total += len(batch)
