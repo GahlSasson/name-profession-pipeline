@@ -65,11 +65,13 @@ jobs:
           print("[CSV] wrote", len(rows), "rows -> data/candidates_raw.csv")
           PY
 
-      - name: Show CSV
+           - name: Show CSV
         run: |
           echo "linecount:"; wc -l data/candidates_raw.csv
           echo "preview:"; head -n 5 data/candidates_raw.csv
 
-      # Call the Python script (no heredoc, no indentation issues)
+      - name: Syntax check uploader
+        run: python -m py_compile scripts/upload_csv_field_aware.py
+
       - name: Upload CSV (field-aware; respects single-select options)
         run: python scripts/upload_csv_field_aware.py
