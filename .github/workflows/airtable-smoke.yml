@@ -1,0 +1,79 @@
+name: Airtable Smoke Test (Manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install requests
+        run: python -m pip install --upgrade pip && python -m pip install requests
+
+      - name: Insert one test record into your table
+        run: |
+          python - << 'PY'
+          import os, sys, time, json, urllib.parse, requests
+          BASE  = os.getenv("AIRTABLE_BASE_ID")
+          TABLE = os.getenv("AIRTABLE_TABLE_ID")
+          TOKEN = os.getenv("AIRTABLE_TOKEN")
+          if not (BASE and TABLE and TOKEN):
+              sys.exit("Missing AIRTABLE_* secrets.")
+          H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+          enc_table = urllib.parse.quote(TABLE, safe="")
+
+          # Try to discover fields (schema scope optional); else read 1 record; else proceed blind.
+          fields = None
+          r = requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables", headers={"Authorization": f"Bearer {TOKEN}"}, timeout=30)
+          if r.status_code == 200:
+              data = r.json()
+              for t in data.get("tables", []):
+                  if t.get("id") == TABLE or t.get("name") == TABLE:
+                      fields = [f["name"] for f in t.get("fields", [])]
+                      print("[SMOKE] Table fields:", fields)
+                      break
+
+          # Choose occupation column (prefers 'occupation', else professional_canonical, else the misspelling).
+          def choose_occ(avail):
+              if not avail: return "occupation"
+              for k in ["occupation", "professional_canonical", "professional_canonoical"]:
+                  if k in avail: return k
+              return "occupation"
+
+          occ_col = choose_occ(fields)
+          lang_cols = []
+          for k in ["language", "language-origin"]:
+              if (not fields) or (fields and k in fields):
+                  lang_cols.append(k)
+
+          # Build one record
+          ts = time.strftime("%Y-%m-%d %H:%M:%S")
+          fields_payload = {
+              "full_name": f"SMOKE TEST {ts}",
+              "professional_cluster": "Smoke",
+          }
+          fields_payload[occ_col] = "Tester"
+          for c in lang_cols:
+              fields_payload[c] = "en"
+
+          url = f"https://api.airtable.com/v0/{BASE}/{enc_table}?typecast=true"
+          payload = {"records": [{"fields": fields_payload}]}
+          resp = requests.post(url, headers=H, data=json.dumps(payload), timeout=60)
+          print("[SMOKE] POST", url, "->", resp.status_code)
+          if resp.status_code >= 400:
+              print(resp.text)
+              sys.exit(1)
+          out = resp.json()
+          rec_id = (out.get("records") or [{}])[0].get("id")
+          print(f"[SMOKE] Inserted record id: {rec_id}")
+          PY
