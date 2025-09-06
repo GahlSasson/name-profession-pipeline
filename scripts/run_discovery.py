@@ -48,7 +48,10 @@ def run_discovery(clusters: List[str], limit: int, langs: List[str], surnames: L
         and (not langs or r["lang"] in langs)
         and (not surnames or any(r["full_name"].split()[-1].lower() == s.lower() for s in surnames))
     ]
-    return rows[:max(0, limit)]
+    if not rows:
+        # Guarantee at least 1 row so the pipeline always proceeds during setup
+        rows = [{"full_name": "Test Person", "occupation": "Tester", "cluster": (clusters[0] if clusters else "Trades"), "lang": (langs[0] if langs else "en")}]
+    return rows[:max(1, limit)]
     # --- MOCK END ---
 
 def main():
