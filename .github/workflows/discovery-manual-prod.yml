@@ -36,26 +36,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install requests pandas tenacity python-dotenv
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install requests tenacity pandas python-dotenv; fi
 
       - name: Ensure data dir
         run: mkdir -p data
-
-      - name: Preflight — verify query placeholders (non-blocking)
-        run: |
-          set +e
-          if [ -f queries/query_template.sparql ]; then
-            echo "Verifying template contains expected placeholders..."
-            grep -E "{LANGS}|{LIMIT}|{OCCUPATION_FILTER}|{SURNAME_FILTER}" queries/query_template.sparql
-            echo "Template present."
-          else
-            echo "No queries/query_template.sparql found (ok for mock run)."
-          fi
-          set -e
 
       - name: Run discovery to produce CSV
         env:
@@ -73,8 +60,7 @@ jobs:
 
       - name: Fail if no CSV
         run: |
-          echo "Data dir contents:"
-          ls -lah data || true
+          echo "Data dir contents:"; ls -lah data || true
           test -f data/candidates_raw.csv || (echo "No CSV produced." && exit 1)
 
       - name: Show sample
@@ -83,8 +69,12 @@ jobs:
           echo "First 5 lines:"; head -n 5 data/candidates_raw.csv
 
       - name: Upload to Airtable
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
         run: |
           python scripts/upload_to_airtable.py \
             --csv data/candidates_raw.csv \
-            --base $AIRTABLE_BASE_ID \
-            --table $AIRTABLE_TABLE_ID
+            --base "$AIRTABLE_BASE_ID" \
+            --table "$AIRTABLE_TABLE_ID"
