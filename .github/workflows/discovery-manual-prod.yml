@@ -29,12 +29,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with:
+          python-version: '3.11'
 
       - name: Install deps
-        run: python -m pip install --upgrade pip && python -m pip install requests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
 
-      # ---------- CSV generator (swap this block with your real discovery later) ----------
+      # ---------- CSV generator (leave as-is or swap for your real discovery) ----------
       - name: Generate CSV (mock data for pipeline test)
         env:
           CLUSTERS: ${{ github.event.inputs.clusters }}
@@ -69,100 +72,6 @@ jobs:
           echo "linecount:"; wc -l data/candidates_raw.csv
           echo "preview:"; head -n 5 data/candidates_raw.csv
 
-      # ---------- Upload step (field-aware; respects single-select options) ----------
+      # ---------- Upload via Python script (no heredoc issues) ----------
       - name: Upload CSV (field-aware; respects single-select options)
-        run: |
-          python - <<'PY'
-          import os, sys, csv, json, time, urllib.parse, requests
-
-          BASE   = os.getenv("AIRTABLE_BASE_ID")
-          TOKEN  = (os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or "")
-          TABLE  = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
-          if not (BASE and TOKEN and TABLE): sys.exit("Missing AIRTABLE_* envs.")
-
-          TOKEN = TOKEN.strip().replace("\r","").replace("\n","").replace("\t","")
-          H_AUTH = {"Authorization": f"Bearer {TOKEN}"}
-          H_JSON = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-          enc_table = urllib.parse.quote(TABLE, safe="")
-          url = f"https://api.airtable.com/v0/{BASE}/{enc_table}"   # NOTE: no ?typecast=true
-
-          # --- discover fields + schema (types/choices if available) ---
-          def discover_schema():
-              r = requests.get(f"https://api.airtable.com/v0/meta/bases/{BASE}/tables", headers=H_AUTH, timeout=30)
-              fields, defs = [], {}
-              if r.status_code == 200:
-                  for t in r.json().get("tables", []):
-                      if t.get("id") == TABLE or t.get("name") == TABLE:
-                          for f in t.get("fields", []):
-                              fields.append(f["name"])
-                              defs[f["name"]] = f
-                          return fields, defs
-              # fallback: list keys seen in records
-              r = requests.get(f"https://api.airtable.com/v0/{BASE}/{enc_table}?maxRecords=5", headers=H_AUTH, timeout=30)
-              seen=set()
-              if r.status_code == 200:
-                  for rec in r.json().get("records", []):
-                      seen.update((rec.get("fields") or {}).keys())
-              return sorted(seen), {}
-
-          avail, defs = discover_schema()
-          print("[UPLOAD] Available fields:", avail or "(none)")
-
-          # helpers to pick existing fields
-          def pick_one(cands):
-              for c in cands:
-                  for f in avail:
-                      if f.lower()==c.lower(): return f
-              for c in cands:
-                  cl=c.lower()
-                  for f in avail:
-                      if cl in f.lower(): return f
-              return None
-          def pick_all(cands):
-              out, seen=[], set()
-              for c in cands:
-                  for f in avail:
-                      if f.lower()==c.lower() and f not in seen: out.append(f); seen.add(f)
-              for c in cands:
-                  cl=c.lower()
-                  for f in avail:
-                      if cl in f.lower() and f not in seen: out.append(f); seen.add(f)
-              return out
-
-          # choose your actual fields dynamically (covers snake_case + variants)
-          full_name_field  = pick_one(["full_name","Full Name","Name","fullname","Full name","title"])
-          # cluster can be 'profession_cluster' or 'professional_cluster'
-          cluster_field    = pick_one(["profession_cluster","professional_cluster","Profession Cluster","cluster","Cluster","category","Category"])
-          # occupation can be 'occupation', 'profession_canonical' or 'professional_canonical' (and misspelling)
-          occupation_field = pick_one(["occupation","profession_canonical","professional_canonical","professional_canonoical","job","role","Role"])
-          # language fields: include underscore + hyphen variants
-          language_fields  = pick_all(["language","Language","language_origin","language-origin","Language Origin","lang","Lang"])
-
-          # read allowed options for single/multi-select cluster (if schema available)
-          allowed_cluster = None
-          if cluster_field and cluster_field in defs:
-              fdef = defs[cluster_field]
-              if fdef.get("type") in ("singleSelect","multipleSelects"):
-                  choices = (fdef.get("options") or {}).get("choices") or []
-                  allowed_cluster = [c.get("name") for c in choices if "name" in c]
-                  print(f"[UPLOAD] {cluster_field} allowed options:", allowed_cluster)
-
-          def normalize_select(value, allowed):
-              if not value or not allowed: return None
-              for opt in allowed:
-                  if value.lower() == opt.lower():
-                      return opt  # canonical casing
-              return None  # not allowed → skip
-
-          # build records from CSV
-          recs=[]
-          with open("data/candidates_raw.csv", newline="", encoding="utf-8") as f:
-              reader=csv.DictReader(f)
-              for row in reader:
-                  fields={}
-                  if full_name_field  and row.get("full_name"):  fields[full_name_field]=row["full_name"]
-                  if occupation_field and row.get("occupation"): fields[occupation_field]=row["occupation"]
-                  # cluster: only set if value is allowed (skip otherwise to avoid 422)
-                  if cluster_field and row.get("cluster"):
-                      if allowed_cluster is None:
-                          # schema not available → conservative:
+        run: python scripts/upload_csv_field_aware.py
