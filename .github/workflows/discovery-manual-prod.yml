@@ -24,15 +24,17 @@ jobs:
       AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}      # optional fallback
       AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
       AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}     # optional
-      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}   # you have this
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}   # you have this set
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
+
       - name: Install deps
         run: python -m pip install --upgrade pip && python -m pip install requests
 
-      # ---------- CSV generator (swap with your real discovery later) ----------
+      # ---------- CSV generator (swap this block with your real discovery later) ----------
       - name: Generate CSV (mock data for pipeline test)
         env:
           CLUSTERS: ${{ github.event.inputs.clusters }}
@@ -71,14 +73,13 @@ jobs:
       - name: Upload CSV (field-aware; respects single-select options)
         run: |
           python - <<'PY'
-          import os, sys, csv, json, time, urllib.parse, requests, string
+          import os, sys, csv, json, time, urllib.parse, requests
 
           BASE   = os.getenv("AIRTABLE_BASE_ID")
           TOKEN  = (os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or "")
           TABLE  = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
           if not (BASE and TOKEN and TABLE): sys.exit("Missing AIRTABLE_* envs.")
 
-          # sanitize token
           TOKEN = TOKEN.strip().replace("\r","").replace("\n","").replace("\t","")
           H_AUTH = {"Authorization": f"Bearer {TOKEN}"}
           H_JSON = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
@@ -164,31 +165,4 @@ jobs:
                   # cluster: only set if value is allowed (skip otherwise to avoid 422)
                   if cluster_field and row.get("cluster"):
                       if allowed_cluster is None:
-                          # schema not available → conservative: skip to avoid INVALID_MULTIPLE_CHOICE_OPTIONS
-                          pass
-                      else:
-                          norm = normalize_select(row["cluster"], allowed_cluster)
-                          if norm is not None:
-                              fields[cluster_field] = norm
-                          else:
-                              print(f"[UPLOAD] Skipping cluster '{row['cluster']}' (not in allowed options).")
-                  if language_fields and row.get("lang"):
-                      for lf in language_fields: fields[lf]=row["lang"]
-                  # last resort: ensure something is set so record isn't empty
-                  if not fields:
-                      nf = pick_one(["Name","Full Name","full_name","Title","title"])
-                      if nf: fields[nf] = row.get("full_name") or "Record"
-                  recs.append({"fields": fields})
-
-          # upload in batches of 10
-          total=0
-          for i in range(0, len(recs), 10):
-              batch=recs[i:i+10]
-              r = requests.post(url, headers=H_JSON, data=json.dumps({"records": batch}), timeout=60)
-              if r.status_code >= 400:
-                  print(r.text); sys.exit(1)
-              total += len(batch)
-              print(f"[UPLOAD] batch {i//10+1}: {len(batch)}")
-              time.sleep(0.25)
-          print(f"[UPLOAD] inserted {total} rows")
-          PY
+                          # schema not available → conservative:
