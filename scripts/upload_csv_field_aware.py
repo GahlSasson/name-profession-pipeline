@@ -19,8 +19,10 @@ def discover_schema(base_id, table_id_or_name, headers):
     """Return (available_field_names, field_definitions_by_name)."""
     enc_table = urllib.parse.quote(table_id_or_name, safe="")
     # Try schema API (needs schema.bases:read)
-    r = requests.get(f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
-                     headers=headers, timeout=30)
+    r = requests.get(
+        f"https://api.airtable.com/v0/meta/bases/{base_id}/tables",
+        headers=headers, timeout=30
+    )
     fields, defs = [], {}
     if r.status_code == 200:
         data = r.json()
@@ -31,8 +33,10 @@ def discover_schema(base_id, table_id_or_name, headers):
                     defs[f["name"]] = f
                 return fields, defs
     # Fallback: union of field keys seen in a few records
-    r = requests.get(f"https://api.airtable.com/v0/{base_id}/{enc_table}?maxRecords=5",
-                     headers=headers, timeout=30)
+    r = requests.get(
+        f"https://api.airtable.com/v0/{base_id}/{enc_table}?maxRecords=5",
+        headers=headers, timeout=30
+    )
     seen = set()
     if r.status_code == 200:
         for rec in r.json().get("records", []):
@@ -41,27 +45,27 @@ def discover_schema(base_id, table_id_or_name, headers):
 
 def pick_one(avail, candidates):
     # exact (case-insensitive), then "contains"
-    al = [a.lower() for a in avail]
+    lower = {a.lower(): a for a in avail}
     for c in candidates:
-        if c.lower() in al:
-            return avail[al.index(c.lower())]
+        if c.lower() in lower:
+            return lower[c.lower()]
     for c in candidates:
-        c_l = c.lower()
+        cl = c.lower()
         for a in avail:
-            if c_l in a.lower():
+            if cl in a.lower():
                 return a
     return None
 
 def pick_all(avail, candidates):
     out, used = [], set()
+    lower = {a.lower(): a for a in avail}
     for c in candidates:
-        for a in avail:
-            if a.lower() == c.lower() and a not in used:
-                out.append(a); used.add(a)
+        if c.lower() in lower and lower[c.lower()] not in used:
+            out.append(lower[c.lower()]); used.add(lower[c.lower()])
     for c in candidates:
-        c_l = c.lower()
+        cl = c.lower()
         for a in avail:
-            if c_l in a.lower() and a not in used:
+            if cl in a.lower() and a not in used:
                 out.append(a); used.add(a)
     return out
 
@@ -70,7 +74,7 @@ def normalize_select(value, allowed):
         return None
     for opt in allowed:
         if value.lower() == opt.lower():
-            return opt
+            return opt  # canonical casing
     return None
 
 def main():
