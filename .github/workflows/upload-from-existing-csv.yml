@@ -1,0 +1,44 @@
+name: Upload From Existing CSV (Adapter + Upload)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_csv:
+        description: "Path to your source CSV in the repo (e.g., data/source.csv)"
+        required: true
+        default: "data/source.csv"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}
+      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Install deps
+        run: python -m pip install --upgrade pip requests
+
+      - name: Convert your CSV -> normalized schema
+        env:
+          SRC_CSV: ${{ github.event.inputs.source_csv }}
+        run: |
+          python scripts/prepare_csv_from_existing.py --src "$SRC_CSV" --out data/candidates_raw.csv
+
+      - name: Show normalized CSV
+        run: |
+          echo "linecount:"; wc -l data/candidates_raw.csv
+          echo "preview:"; head -n 5 data/candidates_raw.csv
+
+      - name: Syntax check uploader
+        run: python -m py_compile scripts/upload_csv_field_aware.py
+
+      - name: Upload to Airtable (field-aware; respects single-select options)
+        run: python scripts/upload_csv_field_aware.py
