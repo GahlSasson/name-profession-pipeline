@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
 """
-Name→Profession analyzer for Airtable (v2: threshold + lock aware).
+Name→Profession/Cluster analyzer for Airtable (auto-label + threshold + lock).
 
-What this does
---------------
-- Learns token↔cluster associations (PMI) from YOUR table.
-- Scores each record by its name tokens.
+- Learns PMI(token, LABEL) where LABEL is:
+    * profession_cluster / professional_cluster  (if present), else
+    * profession_canonical                      (fallback)
+- Scores each record from its name tokens.
 - Only writes when the score-gap >= THRESHOLD.
-- Skips records that are "locked" by a checkbox or text flag.
+- Skips records marked "locked" (np_lock / Lock / locked).
 
-Config via env (set by workflow inputs):
-- THRESHOLD: float, default 0.8      # minimum gap to write
-- DRY_RUN:  "true"/"false", default false   # if true, prints what it WOULD write
+Writes (depending on which label is used):
+  If CLUSTER label is used:
+    - np_cluster_pred (text)
+    - np_cluster_score (number)
+  If PROFESSION label is used:
+    - np_prof_pred (text)
+    - np_prof_score (number)
 
-Writes (create these in Airtable if you want clean columns; otherwise falls back):
-- np_cluster_pred   (text)
-- np_cluster_score  (number)
-- np_token_explain  (long text)
-- np_status         (text: e.g., "updated@2025-09-06" or "skipped<threshold>")
-- Optional lock field detection: np_lock / Lock / locked (checkbox or text "true")
+Common:
+  - np_token_explain (long text)
+  - np_status        (text)
+
+Env (set by workflow inputs):
+  - THRESHOLD  (float, default 0.8)
+  - DRY_RUN    ("true"/"false", default false)
 """
 
 import os, sys, time, math, json, re, urllib.parse, requests
 from collections import Counter, defaultdict
 from datetime import datetime
 
-# ---------- helpers ----------
+# ---------- Airtable helpers ----------
 
-def env():
+def _env():
     base  = os.getenv("AIRTABLE_BASE_ID")
     token = os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or ""
     table = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
@@ -42,7 +47,6 @@ def env():
 
 def discover_fields(base, table, H_AUTH):
     """Return (available_field_names, defs_by_name or {}). Uses meta if allowed; falls back to observed keys."""
-    # Try meta (needs schema.bases:read)
     r = requests.get(f"https://api.airtable.com/v0/meta/bases/{base}/tables", headers=H_AUTH, timeout=30)
     fields, defs = [], {}
     if r.status_code == 200:
@@ -52,7 +56,7 @@ def discover_fields(base, table, H_AUTH):
                     fields.append(f["name"])
                     defs[f["name"]] = f
                 return fields, defs
-    # Fallback: union of fields from first few records
+    # Fallback: union of keys seen in a few records
     fields_set = set()
     base_url = f"https://api.airtable.com/v0/{base}/{urllib.parse.quote(table, safe='')}"
     r = requests.get(base_url, headers=H_AUTH, params={"maxRecords": 5}, timeout=30)
@@ -71,7 +75,7 @@ def pick_one(avail, aliases):
             if al in f.lower(): return f
     return None
 
-def fetch_all_records(base_url, H_AUTH, page_size=100, max_pages=1000):
+def fetch_all(base_url, H_AUTH, page_size=100, max_pages=1000):
     recs, offset, pages = [], None, 0
     while True:
         params = {"pageSize": page_size}
@@ -86,7 +90,7 @@ def fetch_all_records(base_url, H_AUTH, page_size=100, max_pages=1000):
         if not offset or pages >= max_pages: break
     return recs
 
-def patch_record(base_url, H_JSON, rec_id, fields):
+def patch(base_url, H_JSON, rec_id, fields):
     return requests.patch(f"{base_url}/{rec_id}", headers=H_JSON, data=json.dumps({"fields": fields}), timeout=60)
 
 # ---------- tokenization ----------
@@ -110,59 +114,54 @@ def name_tokens(full_name, given_name=None, surname=None):
     toks.update(char_trigrams(longest)[:5])
     return {t for t in toks if len(t) >= 2}
 
-# ---------- PMI model ----------
+# ---------- PMI ----------
 
-def learn_pmi(records, field_map):
+def learn_pmi(records, nm_f, gn_f, sn_f, label_f):
     token_counts = Counter()
-    cluster_counts = Counter()
+    label_counts = Counter()
     joint_counts = defaultdict(Counter)
     N = 0
     for rec in records:
         f = rec.get("fields", {})
-        name = f.get(field_map["full_name"]) or ""
-        given = f.get(field_map["given_name"]) or ""
-        sur   = f.get(field_map["surname"]) or ""
-        cluster = f.get(field_map["cluster"]) or ""
-        if not cluster: continue
-        toks = name_tokens(name, given, sur)
+        label = f.get(label_f) or ""
+        if not label: continue
+        toks = name_tokens(f.get(nm_f, ""), f.get(gn_f, ""), f.get(sn_f, ""))
         if not toks: continue
         N += 1
-        cluster_counts[cluster] += 1
+        label_counts[label] += 1
         for t in toks:
             token_counts[t] += 1
-            joint_counts[cluster][t] += 1
-    if N == 0: return {}, {}, {}, 0
+            joint_counts[label][t] += 1
+    if N == 0: return {}, {}, 0
     alpha = 1.0
-    clusters = list(cluster_counts.keys())
+    labels = list(label_counts.keys())
     tokens = list(token_counts.keys())
-    p_cluster = {c: (cluster_counts[c]+alpha)/(N+alpha*len(clusters)) for c in clusters}
-    p_token   = {t: (token_counts[t]+alpha)/(N+alpha*len(tokens))  for t in tokens}
+    p_label = {c: (label_counts[c]+alpha)/(N+alpha*len(labels)) for c in labels}
+    p_token = {t: (token_counts[t]+alpha)/(N+alpha*len(tokens)) for t in tokens}
+    denom = (N + alpha*len(tokens)*len(labels))
     pmi = defaultdict(dict)
-    denom_const = (N + alpha * len(tokens) * len(clusters))
-    for c in clusters:
-        pc = p_cluster[c]
+    for c in labels:
+        pc = p_label[c]
         for t in tokens:
-            num = (joint_counts[c][t] + alpha) / denom_const
+            num = (joint_counts[c][t] + alpha) / denom
             pmi[c][t] = math.log(num / (pc * p_token[t]), 2)
-    return pmi, p_cluster, p_token, N
+    return pmi, labels, N
 
-def score_record(tokens, pmi, clusters):
-    scores  = {c: 0.0 for c in clusters}
-    contrib = {c: []   for c in clusters}
+def score(tokens, pmi, labels):
+    scores  = {c: 0.0 for c in labels}
+    contrib = {c: []   for c in labels}
     for t in tokens:
-        for c in clusters:
+        for c in labels:
             v = pmi.get(c, {}).get(t, 0.0)
             if v:
                 scores[c] += v
                 contrib[c].append((t, v))
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     best_c, best_s = ranked[0]
-    second_s = ranked[1][1] if len(ranked) > 1 else 0.0
+    second_s = ranked[1][1] if len(ranked)>1 else 0.0
     gap = best_s - second_s
     top = sorted(contrib[best_c], key=lambda kv: kv[1], reverse=True)[:5]
     return best_c, gap, top
-
-# ---------- Main ----------
 
 def truthy(val):
     if isinstance(val, bool): return val
@@ -170,99 +169,99 @@ def truthy(val):
     s = str(val).strip().lower()
     return s in {"1","true","yes","y","checked"}
 
-def main():
-    # Inputs
-    THRESHOLD = float(os.getenv("THRESHOLD", "0.8"))
-    DRY_RUN   = os.getenv("DRY_RUN", "false").strip().lower() in {"1","true","yes"}
+# ---------- main ----------
 
-    base, table, base_url, H_AUTH, H_JSON = env()
+def main():
+    THRESHOLD = float(os.getenv("THRESHOLD", "0.8"))
+    DRY_RUN   = os.getenv("DRY_RUN","false").strip().lower() in {"1","true","yes"}
+
+    base, table, base_url, H_AUTH, H_JSON = _env()
     avail, defs = discover_fields(base, table, H_AUTH)
 
-    # Map important fields (flexible names)
-    full_name_f  = pick_one(avail, ["full_name","Full Name","Name","fullname","Full name","title"])
-    given_name_f = pick_one(avail, ["given_name","first_name","First Name","Given Name"])
-    surname_f    = pick_one(avail, ["surname","last_name","Last Name","Family Name"])
-    cluster_f    = pick_one(avail, ["profession_cluster","professional_cluster","Profession Cluster","cluster","Cluster"])
-    # results
-    pred_f       = pick_one(avail, ["np_cluster_pred","np_cluster","np_pred"])
-    score_f      = pick_one(avail, ["np_cluster_score","np_score","np_gap"])
-    explain_f    = pick_one(avail, ["np_token_explain","np_explain","notes_qc","Notes","Description"])
-    status_f     = pick_one(avail, ["np_status","status_np","NP Status"])
-    # lock
-    lock_f       = pick_one(avail, ["np_lock","Lock","locked","freeze","frozen"])
+    # Input fields (flexible names)
+    nm_f  = pick_one(avail, ["full_name","Full Name","Name","fullname","Full name","title"])
+    gn_f  = pick_one(avail, ["given_name","first_name","First Name","Given Name"])
+    sn_f  = pick_one(avail, ["surname","last_name","Last Name","Family Name"])
+    cl_f  = pick_one(avail, ["profession_cluster","professional_cluster","Profession Cluster","cluster","Cluster"])
+    pr_f  = pick_one(avail, ["profession_canonical","professional_canonical","professional_canonoical","occupation","Occupation","Job","Role"])
 
-    print(f"[cfg] THRESHOLD={THRESHOLD}, DRY_RUN={DRY_RUN}")
-    print(f"[map] name={full_name_f}/{given_name_f}/{surname_f}, cluster={cluster_f}")
-    print(f"[map] out pred={pred_f}, score={score_f}, explain={explain_f}, status={status_f}, lock={lock_f}")
+    # Decide label to learn
+    label_f   = cl_f if cl_f else pr_f
+    label_kind= "cluster" if cl_f else "profession"
+    if not label_f:
+        sys.exit("[analyzer] No label field found (cluster or profession_canonical). Add one and retry.")
 
-    # Fetch
-    records = fetch_all_records(base_url, H_AUTH)
-    print(f"[fetch] {len(records)} records")
+    # Output fields based on label kind
+    if label_kind == "cluster":
+        pred_f  = pick_one(avail, ["np_cluster_pred","np_cluster","np_pred"])
+        score_f = pick_one(avail, ["np_cluster_score","np_score","np_gap"])
+    else:
+        pred_f  = pick_one(avail, ["np_prof_pred","np_profession_pred","np_prof"])
+        score_f = pick_one(avail, ["np_prof_score","np_score","np_gap_prof"])
 
-    # Learn PMI from labeled rows
-    pmi, p_cluster, p_token, N = learn_pmi(records, {
-        "full_name":  full_name_f or "",
-        "given_name": given_name_f or "",
-        "surname":    surname_f or "",
-        "cluster":    cluster_f or "",
-        "occupation": "",  # not used in v2
-    })
-    if N == 0 or not pmi:
-        sys.exit("[learn] Not enough labeled rows (name + cluster) to learn.")
+    explain_f = pick_one(avail, ["np_token_explain","np_explain","notes_qc","Notes","Description"])
+    status_f  = pick_one(avail, ["np_status","status_np","NP Status"])
+    lock_f    = pick_one(avail, ["np_lock","Lock","locked","freeze","frozen"])
 
-    clusters = list(p_cluster.keys())
-    print(f"[learn] PMI over {N} examples; clusters={clusters}")
+    print(f"[cfg] THRESHOLD={THRESHOLD} DRY_RUN={DRY_RUN}")
+    print(f"[map] label_kind={label_kind} label_field={label_f}")
+    print(f"[map] name={nm_f}/{gn_f}/{sn_f}  pred={pred_f} score={score_f} explain={explain_f} status={status_f} lock={lock_f}")
 
-    # Score & write
+    # Data
+    rows = fetch_all(base_url, H_AUTH)
+    print(f"[fetch] {len(rows)} records")
+
+    # Learn
+    pmi, labels, N = learn_pmi(rows, nm_f or "", gn_f or "", sn_f or "", label_f)
+    if N == 0:
+        sys.exit("[learn] Not enough rows with both name and label to learn.")
+    print(f"[learn] PMI over {N} examples; labels={labels}")
+
+    # Score + write
     dt = datetime.utcnow().strftime("%Y-%m-%dT%H:%MZ")
-    would, updated, locked, weak = 0, 0, 0, 0
+    updated = would = locked = weak = 0
 
-    for rec in records:
+    for rec in rows:
         f = rec.get("fields", {})
         rec_id = rec.get("id")
 
-        # skip locked
         if lock_f and lock_f in f and truthy(f.get(lock_f)):
-            locked += 1
-            continue
+            locked += 1; continue
 
         toks = name_tokens(
-            f.get(full_name_f, "") if full_name_f else "",
-            f.get(given_name_f, "") if given_name_f else "",
-            f.get(surname_f, "") if surname_f else "",
+            f.get(nm_f, "") if nm_f else "",
+            f.get(gn_f, "") if gn_f else "",
+            f.get(sn_f, "") if sn_f else "",
         )
-        if not toks:
-            continue
+        if not toks: continue
 
-        best_c, gap, top = score_record(toks, pmi, clusters)
+        best, gap, top = score(toks, pmi, labels)
 
         if gap < THRESHOLD:
             weak += 1
-            # optionally mark status
             if not DRY_RUN and status_f:
-                patch_record(base_url, H_JSON, rec_id, {status_f: f"skipped<threshold:{THRESHOLD} @ {dt}"})
+                patch(base_url, H_JSON, rec_id, {status_f: f"skipped<threshold:{THRESHOLD} @ {dt}"})
             continue
 
-        # Prepare fields
-        expl = "; ".join([f"{t}:{v:.2f}" for t, v in top]) or "no strong tokens"
+        expl = "; ".join([f"{t}:{v:.2f}" for t,v in top]) or "no strong tokens"
         out = {}
-        if pred_f:    out[pred_f] = best_c
-        if score_f:   out[score_f] = round(gap, 3)
-        if explain_f: out[explain_f] = f"best={best_c}, gap={gap:.3f}, top={expl}"
-        if status_f:  out[status_f] = f"updated@{dt}"
+        if pred_f:  out[pred_f]  = best
+        if score_f: out[score_f] = round(gap, 3)
+        if explain_f: out[explain_f] = f"best={best}, gap={gap:.3f}, top={expl}"
+        if status_f:  out[status_f]  = f"updated@{dt}"
 
         if DRY_RUN:
             would += 1
             continue
 
-        r = patch_record(base_url, H_JSON, rec_id, out)
+        r = patch(base_url, H_JSON, rec_id, out)
         if r.status_code >= 400:
             print(f"[patch] fail {r.status_code} rec={rec_id}: {r.text}")
         else:
             updated += 1
             time.sleep(0.1)
 
-    print(f"[done] updated={updated} would={would} locked={locked} weak(<{THRESHOLD})={weak}")
+    print(f"[done] label_kind={label_kind} updated={updated} would={would} locked={locked} weak(<{THRESHOLD})={weak}")
 
 if __name__ == "__main__":
     main()
