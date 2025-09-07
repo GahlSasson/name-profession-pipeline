@@ -3,10 +3,14 @@ name: Harvest + Enrich + Analyze (Web)
 on:
   workflow_dispatch:
     inputs:
-      wikidata_limit:
-        description: "Max people to fetch from Wikidata"
+      wikidata_limit_per_prof:
+        description: "Max people per profession (default 40)"
         required: true
-        default: "150"
+        default: "40"
+      professions:
+        description: "Comma-separated profession labels (leave blank to use large default list)"
+        required: false
+        default: ""
       threshold:
         description: "Min PMI score gap to write (e.g., 0.7)"
         required: true
@@ -25,7 +29,8 @@ jobs:
       AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
       AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}
       AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
-      WIKIDATA_LIMIT:      ${{ github.event.inputs.wikidata_limit }}
+      WIKIDATA_LIMIT_PER_PROF: ${{ github.event.inputs.wikidata_limit_per_prof }}
+      WIKIDATA_PROF_LIST:      ${{ github.event.inputs.professions }}
       THRESHOLD:           ${{ github.event.inputs.threshold }}
       DRY_RUN:             ${{ github.event.inputs.dry_run }}
       FORCE_LABEL:         profession
@@ -35,7 +40,7 @@ jobs:
         with: { python-version: '3.11' }
       - name: Install deps
         run: python -m pip install --upgrade pip requests
-      - name: Harvest candidates from Wikidata
+      - name: Harvest from Wikidata
         run: python scripts/fetch_wikidata_people.py
       - name: Enrich etymology (meaning/roots)
         run: python scripts/enrich_etymology.py
