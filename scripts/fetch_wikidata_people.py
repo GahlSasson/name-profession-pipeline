@@ -2,11 +2,12 @@
 """
 Harvest people + professions from Wikidata and upsert into Airtable `Candidates`.
 
-Robust label→QID resolver:
-- Case-insensitive exact match first
-- Then "contains" match as fallback
-- Restricts to occupation or subclass-of-occupation (P31/P279* Q28640)
-- Continues even if some labels don't resolve
+Fixes:
+- Resolve labels case-insensitively and by "contains" as fallback
+- Accept occupations OR subclasses of occupation (P31/P279* wd:Q28640)
+- Fetch people whose occupation is the label OR ANY SUBCLASS of that label
+  via:    ?person wdt:P106/wdt:P279* wd:{qid}
+- Never fail the pipeline if some labels can't be resolved
 
 ENV required:
   AIRTABLE_BASE_ID, AIRTABLE_TOKEN (or AIRTABLE_API_KEY),
@@ -18,31 +19,12 @@ Optional ENV:
 """
 import os, sys, time, json, urllib.parse, requests
 
-UA = "name-profession-pipeline/2.1 (GitHub Actions; contact link in repo README)"
+UA = "name-profession-pipeline/2.2 (GitHub Actions; contact link in repo README)"
 SPARQL = "https://query.wikidata.org/sparql"
 
 DEFAULT_PROF_LABELS = [
-    # STEM / Medical
-    "Engineer","Electrical engineer","Mechanical engineer","Civil engineer","Computer scientist",
-    "Programmer","Data scientist","Statistician","Physicist","Chemist","Biologist","Geologist",
-    "Meteorologist","Astronomer","Astrophysicist","Oceanographer","Environmental scientist",
-    "Mathematician","Doctor","Physician","Surgeon","Psychologist","Psychiatrist","Pharmacist",
-    "Dentist","Veterinarian","Nurse",
-    # Humanities / Social
-    "Historian","Archaeologist","Anthropologist","Sociologist","Economist","Philosopher","Linguist",
-    "Teacher","Professor","Lecturer","Librarian","Translator","Interpreter",
-    # Law / Public
-    "Lawyer","Attorney","Judge","Police officer","Firefighter","Soldier","Diplomat","Civil servant",
-    "Politician",
-    # Business / Trades
-    "Businessperson","Entrepreneur","Manager","Accountant","Salesperson","Marketing professional",
-    "Architect","Carpenter","Mason","Plumber","Electrician","Mechanic","Driver","Pilot","Sailor",
-    "Farmer","Fisher","Chef","Cook","Baker","Butcher",
-    # Arts / Media / Sports
-    "Artist","Painter","Sculptor","Illustrator","Designer","Fashion designer","Photographer",
-    "Actor","Actress","Film director","Screenwriter","Producer","Journalist","Editor","Writer",
-    "Author","Poet","Novelist","Musician","Singer","Composer","Pianist","Violinist","Guitarist",
-    "Dancer","Choreographer","Athlete","Footballer","Basketball player","Tennis player",
+    "Engineer","Artist","Mathematician","Baker",
+    # add or leave blank in the workflow input to use your larger list
 ]
 
 def http_get(url, params=None, headers=None, timeout=60):
@@ -56,11 +38,11 @@ def http_get(url, params=None, headers=None, timeout=60):
         return r
     return r
 
-# --- label -> QID (case-insensitive) ---
+# --- label -> QID (case-insensitive exact, then contains) ---
 def resolve_label_to_qid(label_en: str) -> str | None:
-    # 1) case-insensitive exact match
+    # exact (case-insensitive)
     q1 = f"""
-    SELECT ?occ WHERE {{
+    SELECT ?occ ?lab WHERE {{
       ?occ wdt:P31/wdt:P279* wd:Q28640 .
       ?occ rdfs:label ?lab FILTER(LANG(?lab)="en").
       FILTER( LCASE(STR(?lab)) = LCASE("{label_en}") )
@@ -72,7 +54,7 @@ def resolve_label_to_qid(label_en: str) -> str | None:
         if arr:
             return arr[0]["occ"]["value"].split("/")[-1]
 
-    # 2) fallback: label contains substring (pick the shortest label)
+    # contains fallback (pick shortest label)
     q2 = f"""
     SELECT ?occ ?lab WHERE {{
       ?occ wdt:P31/wdt:P279* wd:Q28640 .
@@ -96,16 +78,19 @@ def resolve_profession_list(labels: list[str]) -> dict[str, str]:
         qid = resolve_label_to_qid(lab)
         if qid:
             out[lab] = qid
+            print(f"[harvest] resolved: {lab} -> {qid}")
         else:
             print(f"[harvest] WARN: no QID found for label '{lab}' (skipped)")
-        time.sleep(0.2)  # be polite to endpoint
+        time.sleep(0.2)
     return out
 
+# NOTE: subclass-aware occupation match:
+#       ?person wdt:P106/wdt:P279* wd:{qid}
 def fetch_people_for_qid(qid: str, per_prof_limit: int) -> list[dict]:
     query = f"""
     SELECT ?person ?personLabel ?occLabel ?givenNameLabel ?familyNameLabel ?lang
     WHERE {{
-      ?person wdt:P106 wd:{qid} .
+      ?person wdt:P106/wdt:P279* wd:{qid} .
       OPTIONAL {{ ?person wdt:P735 ?given . }}
       OPTIONAL {{ ?person wdt:P734 ?family . }}
       BIND(LANG(?personLabel) AS ?lang)
@@ -123,8 +108,10 @@ def fetch_people_for_qid(qid: str, per_prof_limit: int) -> list[dict]:
         fam   = b.get("familyNameLabel",{}).get("value","").strip()
         occ   = b.get("occLabel",{}).get("value","").strip()
         lang  = (b.get("lang",{}).get("value","") or "en").strip()
-        if not full: full = " ".join([given,fam]).strip()
-        if not full or not occ: continue
+        if not full:
+            full = " ".join([given,fam]).strip()
+        if not full or not occ:
+            continue
         rows.append({
             "full_name": full,
             "given_name": given,
@@ -139,7 +126,7 @@ def get_env():
     tok   = os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or ""
     table = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
     if not (base and tok and table):
-        sys.exit("[harvest] Missing AIRTABLE_* envs.")
+            sys.exit("[harvest] Missing AIRTABLE_* envs.")
     tok = tok.strip().replace("\r","").replace("\n","").replace("\t","")
     enc = urllib.parse.quote(table, safe="")
     base_url = f"https://api.airtable.com/v0/{base}/{enc}"
@@ -191,15 +178,16 @@ def main():
     prof_map = resolve_profession_list(labels)
     if not prof_map:
         print("[harvest] No profession QIDs resolved; nothing to do.")
-        return  # <— don't fail the pipeline; just skip
+        return
     print(f"[harvest] professions_resolved={len(prof_map)}")
 
     all_rows = []
     for lab, qid in prof_map.items():
         rows = fetch_people_for_qid(qid, per_prof_limit)
+        print(f"[harvest] fetched {len(rows)} for {lab} ({qid})")
         all_rows.extend(rows)
         time.sleep(0.25)
-    print(f"[harvest] fetched rows={len(all_rows)}")
+    print(f"[harvest] total fetched rows={len(all_rows)}")
 
     if not all_rows:
         print("[harvest] nothing fetched.")
