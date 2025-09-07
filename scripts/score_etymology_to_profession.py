@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 Score how well name_roots semantically align with the profession.
-Writes:
-  - name_meaning (Long text): combined narrative = existing gloss + rationale (roots/hits/target/score)
+
+Writes BOTH:
+  - name_meaning (Long text): keeps any existing gloss, then appends a rationale line
+  - etymology_explain (Long text): same rationale text (dedicated 'why' column)
+Also writes:
   - etymology_score (0-1)
   - etymology_match (Strong/Medium/Weak/None)
 """
-
 import os, sys, json, time, urllib.parse, requests
 
-# ---------- Airtable helpers ----------
 def _env():
     base  = os.getenv("AIRTABLE_BASE_ID")
     tok   = os.getenv("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_API_KEY") or ""
     table = os.getenv("AIRTABLE_TABLE_ID") or os.getenv("AIRTABLE_TABLE_NAME")
-    if not (base and tok and table):
-        sys.exit("Missing AIRTABLE_* envs.")
+    if not (base and tok and table): sys.exit("Missing AIRTABLE_* envs.")
     tok = tok.strip().replace("\r","").replace("\n","").replace("\t","")
     enc = urllib.parse.quote(table, safe="")
     base_url = f"https://api.airtable.com/v0/{base}/{enc}"
@@ -34,24 +34,26 @@ def fetch_all(base_url, H_AUTH, page_size=100):
         if not off: break
     return recs
 
-def patch(base_url, H_JSON, rec_id, fields):
-    return requests.patch(f"{base_url}/{rec_id}", headers=H_JSON, data=json.dumps({"fields": fields}), timeout=60)
+def patch(base_url, H_JSON, rid, fields):
+    return requests.patch(f"{base_url}/{rid}", headers=H_JSON,
+                          data=json.dumps({"fields": fields}), timeout=60)
 
-# ---------- Profession keyword sets (expand freely) ----------
+# profession keywords (expand freely) — case-insensitive at runtime
 KEYWORDS = {
-    "Engineer":      {"build","make","forge","device","engine","machine","metal","smith","carpenter","adze","wood","craft"},
-    "Artist":        {"art","paint","color","design","draw","create","sculpt","craft","lace"},
-    "Mathematician": {"number","count","measure","logic","calc","think"},
-    "Baker":         {"bread","bake","oven","grain","loaf","flour"},
-    "Agriculture":   {"field","farm","earth","harvest","plough","grain","vine","vinci"},
+    "engineer":      {"build","make","forge","device","engine","machine","metal","smith","carpenter","adze","wood","craft"},
+    "artist":        {"art","paint","color","design","draw","create","sculpt","craft","lace"},
+    "mathematician": {"number","count","measure","logic","calc","think"},
+    "baker":         {"bread","bake","oven","grain","loaf","flour"},
+    "agriculture":   {"field","farm","earth","harvest","plough","grain","vine","vinci"},
 }
 
 def choose_target(f):
-    # Prefer ground truth; fall back to predicted if needed
-    return (f.get("profession_canonical") or f.get("np_prof_pred") or "").strip()
+    # prefer your label, else predicted
+    t = (f.get("profession_canonical") or f.get("np_prof_pred") or "").strip()
+    return t
 
 def score_alignment(roots, target):
-    kw = KEYWORDS.get(target, set())
+    kw = KEYWORDS.get(target.lower(), set())
     if not roots: return 0.0, set()
     hits = set(r for r in roots if r in kw)
     score = len(hits) / max(1, len(roots))
@@ -70,38 +72,36 @@ def main():
 
     for rec in rows:
         f = rec.get("fields", {}); rid = rec.get("id")
-
-        # roots must exist (filled by enrich_etymology.py)
         roots_raw = f.get("name_roots")
-        if not roots_raw: continue
+        if not roots_raw:  # enrichment should guarantee this; skip if truly absent
+            continue
         try:
             roots = set(json.loads(roots_raw))
         except Exception:
             continue
 
         target = choose_target(f)
-        if not target:  # nothing to align against
-            continue
+        if not target:  # nothing to align to
+            target = "(unknown)"
 
         s, hits = score_alignment(roots, target)
         tier_txt = tier(s)
 
-        # Existing gloss, if any
+        # Existing gloss
         gloss = (f.get("name_meaning") or "").strip()
 
-        # Build the combined narrative for name_meaning
-        narrative_lines = []
-        if gloss:
-            narrative_lines.append(f"Meaning: {gloss}")
-        # Always add rationale
-        narrative_lines.append(
+        # Rationale text (always)
+        rationale = (
             f"Rationale: roots={sorted(list(roots))} → hits={sorted(list(hits))} "
             f"→ target={target} → score={s:.2f} ({tier_txt})"
         )
-        combined = "\n".join(narrative_lines)
+
+        # Combine into name_meaning
+        combined = f"{gloss}\n{rationale}" if gloss else rationale
 
         out = {
-            "name_meaning": combined,           # <— write the narrative here
+            "name_meaning": combined,       # human-friendly narrative
+            "etymology_explain": rationale, # dedicated WHY column
             "etymology_score": round(s, 2),
             "etymology_match": tier_txt,
         }
