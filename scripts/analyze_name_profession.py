@@ -136,4 +136,132 @@ def learn_pmi(records, field_map):
     for rec in records:
         f = rec.get("fields", {})
         name = f.get(field_map["full_name"]) or ""
-        giv
+        given = f.get(field_map["given_name"]) or ""
+        sur   = f.get(field_map["surname"]) or ""
+        cluster = f.get(field_map["cluster"]) or ""
+        if not name and not (given or sur):
+            continue
+        if not cluster:
+            continue
+        toks = name_tokens(name, given, sur)
+        if not toks: continue
+        N += 1
+        cluster_counts[cluster] += 1
+        for t in toks:
+            token_counts[t] += 1
+            joint_counts[cluster][t] += 1
+
+    if N == 0:
+        return {}, {}, {}, 0
+
+    # Laplace smoothing
+    alpha = 1.0
+    clusters = list(cluster_counts.keys())
+    tokens = list(token_counts.keys())
+
+    p_cluster = {c: (cluster_counts[c] + alpha) / (N + alpha * len(clusters)) for c in clusters}
+    p_token   = {t: (token_counts[t]   + alpha) / (N + alpha * len(tokens))  for t in tokens}
+
+    pmi = defaultdict(dict)
+    for c in clusters:
+        for t in tokens:
+            num   = (joint_counts[c][t] + alpha) / (N + alpha * len(tokens) * len(clusters))
+            denom = p_cluster[c] * p_token[t]
+            pmi[c][t] = math.log(num / denom, 2)
+
+    return pmi, p_cluster, p_token, N
+
+def score_record(tokens, pmi, clusters):
+    """Sum PMI over tokens for each cluster; return best cluster, score gap, top contributing tokens."""
+    scores  = {c: 0.0 for c in clusters}
+    contrib = {c: []   for c in clusters}
+    for t in tokens:
+        for c in clusters:
+            val = pmi.get(c, {}).get(t, 0.0)
+            if val != 0.0:
+                scores[c] += val
+                contrib[c].append((t, val))
+    ranked   = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    best_c   = ranked[0][0]
+    best_s   = ranked[0][1]
+    second_s = ranked[1][1] if len(ranked) > 1 else 0.0
+    gap      = best_s - second_s
+    top_tokens = sorted(contrib[best_c], key=lambda kv: kv[1], reverse=True)[:5]
+    return best_c, gap, top_tokens, scores
+
+# ---------- Main pipeline ----------
+
+def main():
+    base, table, base_url, H_AUTH, H_JSON = env()
+
+    # Discover fields in the table
+    avail, defs = discover_fields(base, table, H_AUTH)
+    # Map to your column names
+    full_name_f  = pick_one(avail, ["full_name", "Full Name", "Name", "fullname", "Full name", "title"])
+    given_name_f = pick_one(avail, ["given_name", "first_name", "First Name", "Given Name"])
+    surname_f    = pick_one(avail, ["surname", "last_name", "Last Name", "Family Name"])
+    cluster_f    = pick_one(avail, ["profession_cluster", "professional_cluster", "Profession Cluster", "cluster", "Cluster"])
+    occupation_f = pick_one(avail, ["occupation","profession_canonical","professional_canonical","professional_canonoical","job","role","Role"])
+
+    # Result field targets
+    np_pred_f    = pick_one(avail, ["np_cluster_pred", "np_cluster", "np_pred"])
+    np_score_f   = pick_one(avail, ["np_cluster_score", "np_score", "np_gap"])
+    np_explain_f = pick_one(avail, ["np_token_explain", "np_explain", "notes_qc", "Notes", "Description"])
+
+    # Fetch data
+    print("[analyzer] Fetching records…")
+    records = fetch_all_records(base_url, H_AUTH, page_size=100)
+    print(f"[analyzer] Loaded {len(records)} records")
+
+    # Learn PMI from labeled data (rows that have cluster & name info)
+    field_map = {
+        "full_name":  full_name_f or "",
+        "given_name": given_name_f or "",
+        "surname":    surname_f or "",
+        "cluster":    cluster_f or "",
+        "occupation": occupation_f or "",
+    }
+    pmi, p_cluster, p_token, N = learn_pmi(records, field_map)
+    if N == 0 or not pmi:
+        sys.exit("[analyzer] Not enough data with both Name and Cluster to learn signals.")
+
+    clusters = list(p_cluster.keys())
+    print(f"[analyzer] Learned PMI over {N} examples; clusters={clusters}")
+
+    # Score each record and write back
+    updated = 0
+    for rec in records:
+        f = rec.get("fields", {})
+        rec_id = rec.get("id")
+        name   = f.get(full_name_f) if full_name_f else ""
+        tokens = name_tokens(name, f.get(given_name_f, ""), f.get(surname_f, "")) if (full_name_f or given_name_f or surname_f) else set()
+        if not tokens:
+            continue
+
+        best_c, gap, top_tokens, _scores = score_record(tokens, pmi, clusters)
+        expl = "; ".join([f"{tok}:{val:.2f}" for tok, val in top_tokens]) or "no strong tokens"
+
+        out_fields = {}
+        if np_pred_f:    out_fields[np_pred_f] = best_c
+        if np_score_f:   out_fields[np_score_f] = round(gap, 3)
+        if np_explain_f: out_fields[np_explain_f] = f"best={best_c}, gap={gap:.3f}, top={expl}"
+
+        if not (np_pred_f and np_score_f and np_explain_f):
+            fallback = pick_one(avail, ["notes_qc","Description","Notes"])
+            if fallback:
+                out_fields[fallback] = json.dumps({"best": best_c, "gap": gap, "top": top_tokens}, ensure_ascii=False)
+
+        if not out_fields:
+            continue
+
+        r = patch_record(base_url, H_JSON, rec_id, out_fields)
+        if r.status_code >= 400:
+            print(f"[analyzer] Patch failed ({r.status_code}) for {rec_id}: {r.text}")
+        else:
+            updated += 1
+            time.sleep(0.15)
+
+    print(f"[analyzer] Updated {updated} records with predictions/scores.")
+
+if __name__ == "__main__":
+    main()
