@@ -11,6 +11,10 @@ on:
         description: "Don't write to Airtable (true/false)"
         required: true
         default: "true"
+      force_label:
+        description: "Force label source: profession | cluster | (leave blank for auto)"
+        required: false
+        default: "profession"
 
 jobs:
   analyze:
@@ -23,6 +27,7 @@ jobs:
       AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
       THRESHOLD:           ${{ github.event.inputs.threshold }}
       DRY_RUN:             ${{ github.event.inputs.dry_run }}
+      FORCE_LABEL:         ${{ github.event.inputs.force_label }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
