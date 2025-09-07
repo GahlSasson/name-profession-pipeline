@@ -1,0 +1,25 @@
+name: Analyze Name→Profession (PMI)
+
+on:
+  workflow_dispatch: {}
+  # (optional) run nightly at 02:30 UTC
+  # schedule:
+  #   - cron: "30 2 * * *"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}
+      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install deps
+        run: python -m pip install --upgrade pip requests
+      - name: Run analyzer
+        run: python scripts/analyze_name_profession.py
