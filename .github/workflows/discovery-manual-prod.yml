@@ -3,18 +3,9 @@ name: Discovery Manual PROD
 on:
   workflow_dispatch:
     inputs:
-      clusters:
-        description: "Comma-separated clusters (e.g., Trades,Arts,Science)"
-        required: true
-        default: "Trades"
-      limit:
-        description: "Per-occupation result limit"
-        required: true
-        default: "5"
-      langs:
-        description: "Comma-separated language codes (e.g., en,it)"
-        required: true
-        default: "en"
+      clusters: { description: "Comma-separated clusters", required: true, default: "Trades" }
+      limit:    { description: "Row limit", required: true, default: "5" }
+      langs:    { description: "Comma-separated language codes", required: true, default: "en" }
 
 jobs:
   run:
@@ -37,35 +28,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests
 
-      # Generate a tiny CSV (replace this with your real discovery later)
-      - name: Generate CSV (mock)
+      - name: Generate CSV (mock; replace with real discovery later)
         env:
           CLUSTERS: ${{ github.event.inputs.clusters }}
           LIMIT:    ${{ github.event.inputs.limit }}
           LANGS:    ${{ github.event.inputs.langs }}
         run: |
-          python - <<'PY'
-          import os, csv, pathlib
-          clusters=[c.strip() for c in os.getenv("CLUSTERS","").split(",") if c.strip()]
-          try: limit=int(os.getenv("LIMIT","5"))
-          except: limit=5
-          langs=[l.strip() for l in os.getenv("LANGS","en").split(",") if l.strip()]
-          rows=[
-            {"full_name":"Ada Lovelace","occupation":"Mathematician","cluster":"Science","lang":"en"},
-            {"full_name":"Nikola Tesla","occupation":"Engineer","cluster":"Trades","lang":"en"},
-            {"full_name":"Leonardo da Vinci","occupation":"Artist","cluster":"Arts","lang":"it"},
-          ]
-          rows=[r for r in rows if (not clusters or r["cluster"] in clusters) and (not langs or r["lang"] in langs)]
-          if not rows:
-            rows=[{"full_name":"Test Person","occupation":"Tester","cluster":(clusters[0] if clusters else "Trades"),"lang":(langs[0] if langs else "en")}]
-          p=pathlib.Path("data"); p.mkdir(parents=True, exist_ok=True)
-          with open("data/candidates_raw.csv","w",newline="",encoding="utf-8") as f:
-            w=csv.DictWriter(f,fieldnames=["full_name","occupation","cluster","lang"])
-            w.writeheader(); w.writerows(rows)
-          print("[CSV] wrote", len(rows), "rows -> data/candidates_raw.csv")
-          PY
+          python scripts/run_discovery.py --clusters "$CLUSTERS" --limit "$LIMIT" --langs "$LANGS" --out data/candidates_raw.csv
 
-           - name: Show CSV
+      - name: Show CSV
         run: |
           echo "linecount:"; wc -l data/candidates_raw.csv
           echo "preview:"; head -n 5 data/candidates_raw.csv
