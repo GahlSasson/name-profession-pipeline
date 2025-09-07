@@ -4,16 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       threshold:
-        description: "Min score gap to write (e.g., 0.8)"
+        description: "Min score gap to write (e.g., 0.8 or 1.0)"
         required: true
         default: "0.8"
       dry_run:
         description: "Don't write to Airtable (true/false)"
         required: true
         default: "true"
-  # optional nightly run
-  # schedule:
-  #   - cron: "30 2 * * *"
 
 jobs:
   analyze:
