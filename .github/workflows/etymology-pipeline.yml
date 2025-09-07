@@ -1,0 +1,41 @@
+name: Etymology + Profession Analyzer
+
+on:
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Min PMI score gap to write (e.g., 0.7)"
+        required: true
+        default: "0.7"
+      dry_run:
+        description: "Don't write predictions (true/false)"
+        required: true
+        default: "true"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN:      ${{ secrets.AIRTABLE_TOKEN }}
+      AIRTABLE_API_KEY:    ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_BASE_ID:    ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_ID:   ${{ secrets.AIRTABLE_TABLE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+      THRESHOLD:           ${{ github.event.inputs.threshold }}
+      DRY_RUN:             ${{ github.event.inputs.dry_run }}
+      FORCE_LABEL:         profession   # force learning on profession_canonical
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install deps
+        run: python -m pip install --upgrade pip requests
+
+      - name: Enrich etymology (meaning/roots)
+        run: python scripts/enrich_etymology.py
+
+      - name: Score etymology vs profession
+        run: python scripts/score_etymology_to_profession.py
+
+      - name: Analyze names statistically (PMI)
+        run: python scripts/analyze_name_profession.py
