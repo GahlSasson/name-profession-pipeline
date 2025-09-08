@@ -8,7 +8,7 @@ on:
         required: true
         default: "40"
       professions:
-        description: "Comma-separated profession labels (leave blank to use large default list)"
+        description: "Comma-separated profession labels (leave blank to use default list)"
         required: false
         default: ""
       threshold:
@@ -37,14 +37,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with:
+          python-version: "3.11"
       - name: Install deps
         run: python -m pip install --upgrade pip requests
+
       - name: Harvest from Wikidata
-        run: python scripts/fetch_wikidata_people.py
+        run: |
+          echo "::group::Harvester inputs"
+          echo "professions=${WIKIDATA_PROF_LIST:-<default list>}"
+          echo "limit_per_prof=${WIKIDATA_LIMIT_PER_PROF}"
+          echo "::endgroup::"
+          # run unbuffered so prints show immediately
+          python -u scripts/fetch_wikidata_people.py
+
       - name: Enrich etymology (meaning/roots)
-        run: python scripts/enrich_etymology.py
+        run: python -u scripts/enrich_etymology.py
+
       - name: Score etymology vs profession
-        run: python scripts/score_etymology_to_profession.py
+        run: python -u scripts/score_etymology_to_profession.py
+
       - name: Analyze names statistically (PMI)
-        run: python scripts/analyze_name_profession.py
+        run: python -u scripts/analyze_name_profession.py
